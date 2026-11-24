@@ -1,0 +1,495 @@
+{
+  "entities": {
+    "Branch": {
+      "title": "Branch",
+      "description": "Store branch location with isolated inventory and branch-specific receipt metadata.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "code": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "nameMm": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "nameEn": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "addressMm": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "addressEn": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "isMain": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "serverCreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "serverUpdatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "code",
+        "nameMm",
+        "nameEn",
+        "phone",
+        "addressMm",
+        "addressEn",
+        "isMain",
+        "createdAt",
+        "serverCreatedAt",
+        "serverUpdatedAt"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Mini mart SKU with Myanmar/English names, pricing, barcode SKU, and per-branch stock map.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sku": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "nameMm": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "nameEn": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "beverages",
+            "snacks",
+            "groceries",
+            "personal_care",
+            "household",
+            "dairy_chilled"
+          ]
+        },
+        "costPrice": {
+          "type": "number"
+        },
+        "sellPrice": {
+          "type": "number"
+        },
+        "stock": {
+          "type": "number"
+        },
+        "branchStocks": {
+          "type": "object",
+          "description": "Map of branchId to numeric stock quantity"
+        },
+        "minStock": {
+          "type": "number"
+        },
+        "unitMm": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "unitEn": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "serverCreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "serverUpdatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "sku",
+        "nameMm",
+        "nameEn",
+        "category",
+        "costPrice",
+        "sellPrice",
+        "stock",
+        "minStock",
+        "unitMm",
+        "unitEn",
+        "updatedAt",
+        "serverCreatedAt",
+        "serverUpdatedAt"
+      ]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "POS sale invoice or partial reversal credit note with line items, payment method, and profit.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "invoiceNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "branchId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "branchNameMm": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "branchNameEn": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of sold or returned line items (max 100 items)"
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "discount": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "profit": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["cash", "kbzpay", "wavepay", "aya_pay"]
+        },
+        "amountPaid": {
+          "type": "number"
+        },
+        "changeGiven": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "voided"]
+        },
+        "synced": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "reversalReason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "reversedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "reversedItems": {
+          "type": "object"
+        },
+        "reversalOfInvoiceNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "serverCreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "serverUpdatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "invoiceNo",
+        "branchId",
+        "items",
+        "subtotal",
+        "discount",
+        "total",
+        "profit",
+        "paymentMethod",
+        "amountPaid",
+        "changeGiven",
+        "status",
+        "synced",
+        "createdAt",
+        "serverCreatedAt",
+        "serverUpdatedAt"
+      ]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Immutable inventory audit trail ledger entry per branch.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sku": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "productNameMm": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "productNameEn": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "branchId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "branchNameMm": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "branchNameEn": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "sale",
+            "restock",
+            "adjustment",
+            "void",
+            "initial",
+            "transfer_in",
+            "transfer_out"
+          ]
+        },
+        "delta": {
+          "type": "number"
+        },
+        "previousStock": {
+          "type": "number"
+        },
+        "newStock": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "synced": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "serverCreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "productId",
+        "sku",
+        "productNameMm",
+        "productNameEn",
+        "type",
+        "delta",
+        "previousStock",
+        "newStock",
+        "reason",
+        "synced",
+        "createdAt",
+        "serverCreatedAt"
+      ]
+    },
+    "StoreSettings": {
+      "title": "StoreSettings",
+      "description": "Store profile, default language, theme preference, and active branch selection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storeNameMm": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "storeNameEn": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "addressMm": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "addressEn": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "receiptFooterMm": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "receiptFooterEn": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "defaultLanguage": {
+          "type": "string",
+          "enum": ["mm", "en"]
+        },
+        "theme": {
+          "type": "string",
+          "enum": ["light", "dark"]
+        },
+        "activeBranchId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "lastSyncedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "serverCreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "serverUpdatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "storeNameMm",
+        "storeNameEn",
+        "phone",
+        "addressMm",
+        "addressEn",
+        "receiptFooterMm",
+        "receiptFooterEn",
+        "defaultLanguage",
+        "serverCreatedAt",
+        "serverUpdatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/branches/{branchId}": {
+      "schema": {
+        "$ref": "#/entities/Branch"
+      },
+      "description": "Store branches synced in real time across devices for the authenticated store owner."
+    },
+    "/products/{productId}": {
+      "schema": {
+        "$ref": "#/entities/Product"
+      },
+      "description": "Mini mart product catalog and per-branch inventory counts synced in real time."
+    },
+    "/sales/{saleId}": {
+      "schema": {
+        "$ref": "#/entities/Sale"
+      },
+      "description": "Completed POS sales, voided invoices, and partial reversal credit notes synced in real time."
+    },
+    "/movements/{movementId}": {
+      "schema": {
+        "$ref": "#/entities/StockMovement"
+      },
+      "description": "Stock audit movements synced across branches."
+    },
+    "/settings/{settingsId}": {
+      "schema": {
+        "$ref": "#/entities/StoreSettings"
+      },
+      "description": "Store configuration, active branch, language, and theme settings per owner."
+    }
+  }
+}

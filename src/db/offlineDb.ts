@@ -925,3 +925,19 @@ export async function clearAllStoreData(): Promise<void> {
   });
 }
 
+export async function replaceLocalStore<T>(
+  storeName: 'branches' | 'products' | 'sales' | 'movements' | 'settings',
+  records: T[]
+): Promise<void> {
+  const db = await openDatabase();
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  store.clear();
+  records.forEach((item) => store.put(item));
+
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+

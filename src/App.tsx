@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { User, onAuthStateChanged } from 'firebase/auth';
+import { disableNetwork, enableNetwork } from 'firebase/firestore';
 import {
   BarChart3,
   ClipboardList,
+  Cloud,
   CloudOff,
   Globe,
   Menu,
@@ -26,7 +29,26 @@ import { SaleReversalModal } from './components/SaleReversalModal';
 import { SalesReportView } from './components/SalesReportView';
 import { SettingsView } from './components/SettingsView';
 import { StockLedgerView } from './components/StockLedgerView';
-import { DEFAULT_SETTINGS, SEED_BRANCHES } from './data/seedData';
+import {
+  DEFAULT_SETTINGS,
+  SEED_BRANCHES,
+  SEED_MOVEMENTS,
+  SEED_PRODUCTS,
+  SEED_SALES,
+} from './data/seedData';
+import {
+  deleteBranchFromFirestore,
+  deleteIdsFromFirestore,
+  deleteProductFromFirestore,
+  pushSnapshotToFirestore,
+  resetKnownFirestoreIds,
+  subscribeToStoreCollections,
+  syncBranchToFirestore,
+  syncMovementToFirestore,
+  syncProductToFirestore,
+  syncSaleToFirestore,
+  syncSettingsToFirestore,
+} from './db/firestoreSync';
 import {
   FullStoreSnapshot,
   adjustStock,
@@ -37,6 +59,7 @@ import {
   initAndLoadSnapshot,
   removeBranch,
   removeProduct,
+  replaceLocalStore,
   resetToSeedData,
   restoreSnapshot,
   reverseSale,
@@ -46,6 +69,7 @@ import {
   syncPendingRecords,
   transferProductStock,
 } from './db/offlineDb';
+import { auth, db, persistencePromise, signInWithGoogle, signOutUser } from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { UI_TEXT, t } from './i18n/translations';
 import {
@@ -100,6 +124,26 @@ export default function App() {
     initialSale: Sale | null;
   }>({ isOpen: false, initialSale: null });
 
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [firestoreMeta, setFirestoreMeta] = useState({
+    active: false,
+    persistenceEnabled: false,
+    fromCache: false,
+    hasPendingWrites: false,
+    error: null as string | null,
+  });
+
+  const latestSnapshotRef = useRef<FullStoreSnapshot>({
+    products: [],
+    sales: [],
+    movements: [],
+    branches: SEED_BRANCHES,
+    settings: DEFAULT_SETTINGS,
+  });
+  latestSnapshotRef.current = { products, sales, movements, branches, settings };
+
   const isOffline = !isBrowserOnline || simulatedOffline;
 
   useEffect(() => {
@@ -132,6 +176,26 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    persistencePromise.then(({ enabled }) => {
+      if (active) {
+        setFirestoreMeta((prev) => ({ ...prev, persistenceEnabled: enabled }));
+      }
+    });
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (!active) return;
+      setAuthUser(user);
+      setAuthReady(true);
+      if (!user) {
+        resetKnownFirestoreIds();
+        setFirestoreMeta((prev) => ({
+          ...prev,
+          active: false,
+          fromCache: false,
+          hasPendingWrites: false,
+          error: null,
+        }));
+      }
+    });
     initAndLoadSnapshot().then((snap) => {
       if (!active) return;
       setProducts(snap.products);
@@ -147,8 +211,111 @@ export default function App() {
     });
     return () => {
       active = false;
+      unsubAuth();
     };
   }, []);
+
+  useEffect(() => {
+    if (simulatedOffline) {
+      void disableNetwork(db).catch(() => {});
+    } else {
+      void enableNetwork(db).catch(() => {});
+    }
+  }, [simulatedOffline]);
+
+  const handleFirestoreSyncError = useCallback((err: Error) => {
+    let msg = err.message;
+    try {
+      const parsed = JSON.parse(err.message) as { error?: string };
+      if (parsed.error) msg = parsed.error;
+    } catch {
+      // Keep raw message
+    }
+    setFirestoreMeta((prev) => ({ ...prev, error: msg }));
+  }, []);
+
+  // Attach real-time Firestore listeners once auth is ready & verified
+  useEffect(() => {
+    if (!authReady || loading || !authUser || !authUser.emailVerified) {
+      return;
+    }
+
+    let cloudInitialized = false;
+    setFirestoreMeta((prev) => ({ ...prev, active: true, error: null }));
+
+    const unsubscribe = subscribeToStoreCollections({
+      ownerId: authUser.uid,
+      onBranches: (remoteBranches, meta) => {
+        setFirestoreMeta((prev) => ({
+          ...prev,
+          active: true,
+          fromCache: meta.fromCache,
+          hasPendingWrites: meta.hasPendingWrites,
+        }));
+        if (remoteBranches.length > 0 || cloudInitialized) {
+          if (remoteBranches.length > 0) {
+            cloudInitialized = true;
+            setBranches(remoteBranches);
+            void replaceLocalStore('branches', remoteBranches);
+          }
+        }
+      },
+      onProducts: (remoteProducts, meta) => {
+        setFirestoreMeta((prev) => ({
+          ...prev,
+          active: true,
+          fromCache: meta.fromCache,
+          hasPendingWrites: meta.hasPendingWrites,
+        }));
+        if (remoteProducts.length > 0 || cloudInitialized) {
+          cloudInitialized = true;
+          setProducts(remoteProducts);
+          void replaceLocalStore('products', remoteProducts);
+        }
+      },
+      onSales: (remoteSales, meta) => {
+        setFirestoreMeta((prev) => ({
+          ...prev,
+          active: true,
+          fromCache: meta.fromCache,
+          hasPendingWrites: meta.hasPendingWrites,
+        }));
+        if (remoteSales.length > 0 || cloudInitialized) {
+          setSales(remoteSales);
+          void replaceLocalStore('sales', remoteSales);
+        }
+      },
+      onMovements: (remoteMovements) => {
+        if (remoteMovements.length > 0 || cloudInitialized) {
+          setMovements(remoteMovements);
+          void replaceLocalStore('movements', remoteMovements);
+        }
+      },
+      onSettings: (remoteSettings) => {
+        if (remoteSettings) {
+          setSettings(remoteSettings);
+          setLang(remoteSettings.defaultLanguage);
+          if (remoteSettings.theme) {
+            setTheme(remoteSettings.theme);
+          }
+          void replaceLocalStore('settings', [remoteSettings]);
+        }
+      },
+      onInitialEmptyCloud: () => {
+        cloudInitialized = true;
+        pushSnapshotToFirestore(
+          authUser.uid,
+          latestSnapshotRef.current,
+          handleFirestoreSyncError
+        );
+      },
+      onError: handleFirestoreSyncError,
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [authReady, authUser, loading, handleFirestoreSyncError]);
 
   const activeBranch = useMemo(
     () =>
@@ -188,26 +355,62 @@ export default function App() {
     }
   }, [isOffline, pendingSyncCount, reloadSnapshot]);
 
+  const cloudUid = authUser?.emailVerified ? authUser.uid : null;
+
+  const handleSignInGoogle = async () => {
+    setAuthLoading(true);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      handleFirestoreSyncError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOutGoogle = async () => {
+    await signOutUser();
+  };
+
+  const handlePushCloudSync = () => {
+    if (!cloudUid) return;
+    pushSnapshotToFirestore(cloudUid, latestSnapshotRef.current, handleFirestoreSyncError);
+  };
+
   const handleSelectBranch = async (branchId: string) => {
     const updated: StoreSettings = { ...settings, activeBranchId: branchId };
     setSettings(updated);
     await saveSettings(updated);
+    if (cloudUid) {
+      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
+    }
   };
 
   const handleSaveBranch = async (branch: Branch) => {
     await saveBranch(branch);
     await reloadSnapshot();
+    if (cloudUid) {
+      syncBranchToFirestore(cloudUid, branch, handleFirestoreSyncError);
+    }
   };
 
   const handleDeleteBranch = async (branchId: string) => {
     await removeBranch(branchId);
+    let updatedSettings: StoreSettings | null = null;
     if (settings.activeBranchId === branchId) {
       const main = branches.find((b) => b.isMain && b.id !== branchId) ?? branches[0];
       if (main) {
-        await saveSettings({ ...settings, activeBranchId: main.id });
+        updatedSettings = { ...settings, activeBranchId: main.id };
+        await saveSettings(updatedSettings);
       }
     }
     await reloadSnapshot();
+    if (cloudUid) {
+      deleteBranchFromFirestore(cloudUid, branchId, handleFirestoreSyncError);
+      if (updatedSettings) {
+        syncSettingsToFirestore(cloudUid, updatedSettings, handleFirestoreSyncError);
+      }
+    }
   };
 
   const handleCompleteSale = async (params: {
@@ -222,18 +425,45 @@ export default function App() {
       existingSalesCount: sales.length,
       isOffline,
     });
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
     setReceiptSale(createdSale);
+    if (cloudUid) {
+      syncSaleToFirestore(cloudUid, createdSale, handleFirestoreSyncError);
+      const cartIds = new Set(params.cart.map((c) => c.productId));
+      snap.products
+        .filter((p) => cartIds.has(p.id))
+        .forEach((p) => syncProductToFirestore(cloudUid, p, handleFirestoreSyncError));
+      snap.movements
+        .filter((m) => m.reason === createdSale.invoiceNo)
+        .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+    }
   };
 
   const handleSaveProduct = async (product: Product, isNew: boolean) => {
     await saveProduct(product, isNew, activeBranch, isOffline);
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
+    if (cloudUid) {
+      const savedProd = snap.products.find((p) => p.id === product.id);
+      if (savedProd) {
+        syncProductToFirestore(cloudUid, savedProd, handleFirestoreSyncError);
+      }
+      if (isNew && product.stock > 0) {
+        const initMov = snap.movements.find(
+          (m) => m.productId === product.id && m.type === 'initial'
+        );
+        if (initMov) {
+          syncMovementToFirestore(cloudUid, initMov, handleFirestoreSyncError);
+        }
+      }
+    }
   };
 
   const handleDeleteProduct = async (productId: string) => {
     await removeProduct(productId);
     await reloadSnapshot();
+    if (cloudUid) {
+      deleteProductFromFirestore(cloudUid, productId, handleFirestoreSyncError);
+    }
   };
 
   const handleBulkImportCsv = async (params: {
@@ -246,7 +476,10 @@ export default function App() {
       branch: activeBranch,
       isOffline,
     });
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
+    if (cloudUid) {
+      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
+    }
     return res;
   };
 
@@ -257,12 +490,16 @@ export default function App() {
     reason: string;
     newCostPrice?: number;
   }) => {
-    await adjustStock({
+    const { updatedProduct, movement } = await adjustStock({
       ...params,
       branch: activeBranch,
       isOffline,
     });
     await reloadSnapshot();
+    if (cloudUid) {
+      syncProductToFirestore(cloudUid, updatedProduct, handleFirestoreSyncError);
+      syncMovementToFirestore(cloudUid, movement, handleFirestoreSyncError);
+    }
   };
 
   const handleTransferStock = async (params: {
@@ -276,7 +513,21 @@ export default function App() {
       ...params,
       isOffline,
     });
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
+    if (cloudUid) {
+      const updatedProd = snap.products.find((p) => p.id === params.product.id);
+      if (updatedProd) {
+        syncProductToFirestore(cloudUid, updatedProd, handleFirestoreSyncError);
+      }
+      snap.movements
+        .filter(
+          (m) =>
+            m.productId === params.product.id &&
+            (m.type === 'transfer_in' || m.type === 'transfer_out')
+        )
+        .slice(0, 2)
+        .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+    }
   };
 
   const handleReverseSale = async (params: {
@@ -290,9 +541,33 @@ export default function App() {
       branches,
       isOffline,
     });
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
     if (reversalRecord) {
       setReceiptSale(reversalRecord);
+    }
+    if (cloudUid) {
+      const updatedOrig = snap.sales.find((s) => s.id === params.saleId);
+      if (updatedOrig) {
+        syncSaleToFirestore(cloudUid, updatedOrig, handleFirestoreSyncError);
+      }
+      if (reversalRecord && reversalRecord.id !== params.saleId) {
+        syncSaleToFirestore(cloudUid, reversalRecord, handleFirestoreSyncError);
+      }
+      if (params.restoreStock) {
+        const retIds = new Set(params.itemsToReturn.map((i) => i.productId));
+        snap.products
+          .filter((p) => retIds.has(p.id))
+          .forEach((p) => syncProductToFirestore(cloudUid, p, handleFirestoreSyncError));
+        snap.movements
+          .filter(
+            (m) =>
+              m.type === 'void' &&
+              updatedOrig &&
+              m.reason.includes(updatedOrig.invoiceNo)
+          )
+          .slice(0, retIds.size)
+          .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+      }
     }
   };
 
@@ -302,7 +577,10 @@ export default function App() {
     if (next.theme) {
       setTheme(next.theme);
     }
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
+    if (cloudUid) {
+      syncSettingsToFirestore(cloudUid, snap.settings, handleFirestoreSyncError);
+    }
   };
 
   const handleChangeTheme = async (nextTheme: ThemeMode) => {
@@ -310,12 +588,18 @@ export default function App() {
     const updated: StoreSettings = { ...settings, theme: nextTheme };
     setSettings(updated);
     await saveSettings(updated);
+    if (cloudUid) {
+      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
+    }
   };
 
   const handleSyncNow = async () => {
     if (isOffline) return;
     await syncPendingRecords();
-    await reloadSnapshot();
+    const snap = await reloadSnapshot();
+    if (cloudUid) {
+      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
+    }
   };
 
   const handleRestoreBackup = async (snap: FullStoreSnapshot) => {
@@ -323,6 +607,9 @@ export default function App() {
     const reloaded = await reloadSnapshot();
     setLang(reloaded.settings.defaultLanguage);
     setTheme(reloaded.settings.theme ?? 'light');
+    if (cloudUid) {
+      pushSnapshotToFirestore(cloudUid, reloaded, handleFirestoreSyncError);
+    }
   };
 
   const handleResetDemo = async () => {
@@ -334,17 +621,44 @@ export default function App() {
     setSettings(snap.settings);
     setLang(snap.settings.defaultLanguage);
     setTheme(snap.settings.theme ?? 'light');
+    if (cloudUid) {
+      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
+    }
   };
 
   const handleDeleteSampleData = async () => {
+    const sampleProductIds = SEED_PRODUCTS.map((p) => p.id);
+    const sampleSaleIds = SEED_SALES.map((s) => s.id);
+    const sampleMovementIds = SEED_MOVEMENTS.map((m) => m.id);
     const res = await deleteSampleData();
     await reloadSnapshot();
+    if (cloudUid) {
+      deleteIdsFromFirestore(
+        cloudUid,
+        {
+          productIds: sampleProductIds,
+          saleIds: sampleSaleIds,
+          movementIds: sampleMovementIds,
+        },
+        handleFirestoreSyncError
+      );
+    }
     return res;
   };
 
   const handleClearAllData = async () => {
+    const pIds = products.map((p) => p.id);
+    const sIds = sales.map((s) => s.id);
+    const mIds = movements.map((m) => m.id);
     await clearAllStoreData();
     await reloadSnapshot();
+    if (cloudUid) {
+      deleteIdsFromFirestore(
+        cloudUid,
+        { productIds: pIds, saleIds: sIds, movementIds: mIds },
+        handleFirestoreSyncError
+      );
+    }
   };
 
   const navItems: Array<{ id: NavTab; label: { mm: string; en: string }; icon: typeof ShoppingCart }> = [
@@ -523,6 +837,38 @@ export default function App() {
             </select>
           </div>
 
+          {/* Cloud Sync Quick Status / Sign-in */}
+          <button
+            type="button"
+            onClick={() => (authUser ? setActiveTab('settings') : void handleSignInGoogle())}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-muted)] transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Cloud
+              className={`w-3.5 h-3.5 ${
+                firestoreMeta.active
+                  ? 'text-[var(--accent-text)]'
+                  : 'text-[var(--text-muted)]'
+              }`}
+            />
+            <span>
+              {authUser
+                ? firestoreMeta.hasPendingWrites
+                  ? lang === 'mm'
+                    ? 'Cloud Syncing...'
+                    : 'Cloud Syncing...'
+                  : firestoreMeta.fromCache
+                  ? lang === 'mm'
+                    ? 'Cloud Cache'
+                    : 'Cloud Cache'
+                  : lang === 'mm'
+                  ? 'Cloud Synced'
+                  : 'Cloud Synced'
+                : lang === 'mm'
+                ? 'Cloud ချိတ်ဆက်'
+                : 'Cloud Sign In'}
+            </span>
+          </button>
+
           <div className="w-auto">
             <PWAInstallButton lang={lang} />
           </div>
@@ -639,6 +985,20 @@ export default function App() {
             onDeleteSampleData={handleDeleteSampleData}
             onClearAllData={handleClearAllData}
             onResetDemo={handleResetDemo}
+            authUser={
+              authUser
+                ? {
+                    uid: authUser.uid,
+                    email: authUser.email,
+                    displayName: authUser.displayName,
+                  }
+                : null
+            }
+            authLoading={authLoading}
+            firestoreMeta={firestoreMeta}
+            onSignInGoogle={handleSignInGoogle}
+            onSignOutGoogle={handleSignOutGoogle}
+            onPushCloudSync={handlePushCloudSync}
           />
         )}
       </main>

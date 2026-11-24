@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
+  Cloud,
   CloudOff,
   Download,
   Edit3,
+  LogIn,
+  LogOut,
   Moon,
   Plus,
   RefreshCw,
@@ -45,6 +48,18 @@ interface SettingsViewProps {
   }>;
   onClearAllData: () => Promise<void>;
   onResetDemo: () => Promise<void>;
+  authUser: { uid: string; email: string | null; displayName: string | null } | null;
+  authLoading: boolean;
+  firestoreMeta: {
+    active: boolean;
+    persistenceEnabled: boolean;
+    fromCache: boolean;
+    hasPendingWrites: boolean;
+    error: string | null;
+  };
+  onSignInGoogle: () => Promise<void>;
+  onSignOutGoogle: () => Promise<void>;
+  onPushCloudSync: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -69,6 +84,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onDeleteSampleData,
   onClearAllData,
   onResetDemo,
+  authUser,
+  authLoading,
+  firestoreMeta,
+  onSignInGoogle,
+  onSignOutGoogle,
+  onPushCloudSync,
 }) => {
   const [form, setForm] = useState<StoreSettings>(settings);
   const [statusMsg, setStatusMsg] = useState('');
@@ -379,6 +400,96 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <RefreshCw className="w-3.5 h-3.5" />
               <span>{lang === 'mm' ? 'ယခု Sync လုပ်မည်' : 'Sync Queue Now'}</span>
             </button>
+          </div>
+        </div>
+
+        {/* Cloud Firestore Real-Time Sync & Offline Persistence */}
+        <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <Cloud className="w-5 h-5 text-[var(--accent-text)] mt-0.5 shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                {lang === 'mm'
+                  ? 'Firestore Cloud Real-Time Sync'
+                  : 'Firestore Cloud Real-Time Sync'}
+              </h3>
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                {authUser ? (
+                  <>
+                    <span className="font-medium text-[var(--text-primary)]">
+                      {authUser.email ?? authUser.displayName ?? authUser.uid}
+                    </span>
+                    {' · '}
+                    {firestoreMeta.hasPendingWrites
+                      ? lang === 'mm'
+                        ? 'Offline Writes စောင့်ဆိုင်းနေသည်'
+                        : 'Pending Offline Writes'
+                      : firestoreMeta.fromCache
+                      ? lang === 'mm'
+                        ? 'IndexedDB Cache မှ အလုပ်လုပ်နေသည်'
+                        : 'Serving from IndexedDB Cache'
+                      : lang === 'mm'
+                      ? 'ဆိုင်ခွဲ၊ ကုန်ပစ္စည်းနှင့် အရောင်းများ Real-Time ချိတ်ဆက်ထားသည်'
+                      : 'Branches, products & sales synced in real time'}
+                    {firestoreMeta.persistenceEnabled &&
+                      (lang === 'mm'
+                        ? ' · Offline Persistence ဖွင့်ပြီး'
+                        : ' · Offline Persistence On')}
+                  </>
+                ) : lang === 'mm' ? (
+                  'Google အကောင့်ဖြင့် ဝင်ရောက်၍ ဆိုင်ခွဲ၊ ကုန်ပစ္စည်းနှင့် အရောင်းမှတ်တမ်းများကို Cloud တွင် Real-Time သိမ်းဆည်းပါ'
+                ) : (
+                  'Sign in with Google to sync branches, products, and sales in real time with offline IndexedDB persistence'
+                )}
+              </p>
+              {firestoreMeta.error && (
+                <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                  {firestoreMeta.error}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {authUser ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onPushCloudSync();
+                    setStatusMsg(
+                      lang === 'mm'
+                        ? 'ဒေတာများကို Firestore Cloud သို့ ပေးပို့နေပါသည်'
+                        : 'Pushing local data to Firestore...'
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-muted)] cursor-pointer whitespace-nowrap"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>{lang === 'mm' ? 'Cloud Sync ပြန်စစ်မည်' : 'Sync to Cloud'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSignOutGoogle}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer whitespace-nowrap"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>{lang === 'mm' ? 'ထွက်မည်' : 'Sign Out'}</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={authLoading}
+                onClick={onSignInGoogle}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-4 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] disabled:opacity-50 cursor-pointer whitespace-nowrap"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>
+                  {lang === 'mm' ? 'Google ဖြင့် Cloud ချိတ်ဆက်မည်' : 'Sign in with Google'}
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </div>

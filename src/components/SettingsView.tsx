@@ -5,8 +5,6 @@ import {
   CloudOff,
   Download,
   Edit3,
-  LogIn,
-  LogOut,
   Moon,
   Plus,
   RefreshCw,
@@ -26,12 +24,14 @@ interface SettingsViewProps {
   settings: StoreSettings;
   branches: Branch[];
   activeBranch: Branch;
+  multiBranchEnabled: boolean;
   lang: Language;
   theme: ThemeMode;
   isBrowserOnline: boolean;
   simulatedOffline: boolean;
   pendingSyncCount: number;
   snapshot: FullStoreSnapshot;
+  onToggleMultiBranch: (enabled: boolean) => Promise<void>;
   onSelectBranch: (branchId: string) => Promise<void>;
   onAddBranch: () => void;
   onEditBranch: (branch: Branch) => void;
@@ -48,8 +48,10 @@ interface SettingsViewProps {
   }>;
   onClearAllData: () => Promise<void>;
   onResetDemo: () => Promise<void>;
-  authUser: { uid: string; email: string | null; displayName: string | null } | null;
-  authLoading: boolean;
+  firebaseConfigured: boolean;
+  firebaseProjectId: string | null;
+  firebaseConfigError: string | null;
+  authUser: { uid: string; isAnonymous: boolean } | null;
   firestoreMeta: {
     active: boolean;
     persistenceEnabled: boolean;
@@ -57,21 +59,20 @@ interface SettingsViewProps {
     hasPendingWrites: boolean;
     error: string | null;
   };
-  onSignInGoogle: () => Promise<void>;
-  onSignOutGoogle: () => Promise<void>;
-  onPushCloudSync: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   branches,
   activeBranch,
+  multiBranchEnabled,
   lang,
   theme,
   isBrowserOnline,
   simulatedOffline,
   pendingSyncCount,
   snapshot,
+  onToggleMultiBranch,
   onSelectBranch,
   onAddBranch,
   onEditBranch,
@@ -84,20 +85,49 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onDeleteSampleData,
   onClearAllData,
   onResetDemo,
+  firebaseConfigured,
+  firebaseProjectId,
+  firebaseConfigError,
   authUser,
-  authLoading,
   firestoreMeta,
-  onSignInGoogle,
-  onSignOutGoogle,
-  onPushCloudSync,
 }) => {
   const [form, setForm] = useState<StoreSettings>(settings);
   const [statusMsg, setStatusMsg] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncResultBanner, setSyncResultBanner] = useState<{
+    kind: 'ok' | 'err';
+    msg: string;
+  } | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [confirmDeleteSample, setConfirmDeleteSample] = useState(false);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [confirmDeleteBranchId, setConfirmDeleteBranchId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleManualSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncResultBanner(null);
+    try {
+      await onSyncNow();
+      const okMsg = lang === 'mm' ? 'Sync အောင်မြင်ပါသည်' : 'Sync successful';
+      setSyncResultBanner({ kind: 'ok', msg: okMsg });
+      setStatusMsg(okMsg);
+      window.setTimeout(() => {
+        setStatusMsg((prev) => (prev === okMsg ? '' : prev));
+      }, 3500);
+    } catch (err) {
+      const errMsg =
+        err instanceof Error
+          ? err.message
+          : lang === 'mm'
+          ? 'Sync လုပ်ရာတွင် အမှားဖြစ်ပွားပါသည်'
+          : 'Sync failed';
+      setSyncResultBanner({ kind: 'err', msg: errMsg });
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const sampleProductIds = new Set(SEED_PRODUCTS.map((p) => p.id));
   const sampleSaleIds = new Set(SEED_SALES.map((s) => s.id));
@@ -174,126 +204,167 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
-      {/* Store Branches Management Panel */}
+      {/* Store Branches Management Panel + Single/Multi-Branch Toggle */}
       <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-3">
           <div className="flex items-center gap-2">
-            <Store className="w-4 h-4 text-[var(--accent-text)]" />
+            <Store className="w-4 h-4 text-[var(--accent-text)] shrink-0" />
             <div>
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-                {lang === 'mm' ? 'ဆိုင်ခွဲများ စီမံခန့်ခွဲမှု' : 'Store Branches'}
+                {lang === 'mm' ? 'ဆိုင်ခွဲ စနစ် (Single / Multi-Branch)' : 'Store Mode & Branches'}
               </h2>
               <p className="text-xs text-[var(--text-muted)]">
-                {lang === 'mm'
-                  ? 'ဆိုင်ခွဲတစ်ခုချင်းစီအလိုက် စတော့လက်ကျန်နှင့် ဘောင်ချာများ သီးခြားခွဲထားနိုင်သည်'
-                  : 'Track separate stock balances and branch receipts across multiple locations'}
+                {multiBranchEnabled
+                  ? lang === 'mm'
+                    ? 'On (ဆိုင်ခွဲများ) — ဆိုင်ခွဲတစ်ခုချင်းစီအလိုက် စတော့လက်ကျန်နှင့် ဘောင်ချာများ သီးခြားခွဲထားသည်'
+                    : 'On (Multi-Branch) — Track separate stock, transfers, and reports across branches'
+                  : lang === 'mm'
+                  ? 'Off (ဆိုင်တစ်ဆိုင်တည်း) — ပင်မဆိုင်တစ်ခုတည်းဖြင့် ရိုးရှင်းစွာ အသုံးပြုနေသည်'
+                  : 'Off (Single Store) — Simplified single-location POS using main store stock'}
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onAddBranch}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] cursor-pointer whitespace-nowrap self-start sm:self-auto"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>{lang === 'mm' ? 'ဆိုင်ခွဲအသစ်ထည့်မည်' : 'Add Branch'}</span>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {branches.map((branch) => {
-            const isActive = branch.id === activeBranch.id;
-            return (
-              <div
-                key={branch.id}
-                className={`rounded-xl border p-4 flex flex-col justify-between gap-3 ${
-                  isActive
-                    ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
-                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]'
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+            <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-[var(--bg-surface-muted)] border border-[var(--border-subtle)]">
+              <button
+                type="button"
+                onClick={() => onToggleMultiBranch(false)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  !multiBranchEnabled
+                    ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-sm'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                 }`}
               >
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono-num text-xs font-semibold text-[var(--accent-text)]">
-                      {branch.code}
-                      {branch.isMain && (
-                        <span className="ml-2 font-sans font-normal text-[var(--text-muted)]">
-                          · {lang === 'mm' ? 'ပင်မဆိုင်' : 'Main'}
+                {lang === 'mm' ? 'Off · ဆိုင်တစ်ဆိုင်တည်း' : 'Off · Single Store'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onToggleMultiBranch(true)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  multiBranchEnabled
+                    ? 'bg-[var(--accent-primary)] text-white shadow-sm'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                {lang === 'mm' ? 'On · ဆိုင်ခွဲများ' : 'On · Multi-Branch'}
+              </button>
+            </div>
+
+            {multiBranchEnabled && (
+              <button
+                type="button"
+                onClick={onAddBranch}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{lang === 'mm' ? 'ဆိုင်ခွဲအသစ်ထည့်မည်' : 'Add Branch'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!multiBranchEnabled ? (
+          <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+            {lang === 'mm'
+              ? `လက်ရှိတွင် "${activeBranch.nameMm}" တစ်ဆိုင်တည်းစနစ် (Off) ဖြင့် အသုံးပြုနေပါသည်။ ဆိုင်ခွဲများစွာ ထပ်မံအသုံးပြုလိုပါက "On · ဆိုင်ခွဲများ" သို့ အချိန်မရွေး ပြန်ဖွင့်နိုင်ပါသည်။`
+              : `Currently operating in Single-Store mode using "${activeBranch.nameEn}". Existing branch records are preserved if you turn Multi-Branch back On later.`}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {branches.map((branch) => {
+              const isActive = branch.id === activeBranch.id;
+              return (
+                <div
+                  key={branch.id}
+                  className={`rounded-xl border p-4 flex flex-col justify-between gap-3 ${
+                    isActive
+                      ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono-num text-xs font-semibold text-[var(--accent-text)]">
+                        {branch.code}
+                        {branch.isMain && (
+                          <span className="ml-2 font-sans font-normal text-[var(--text-muted)]">
+                            · {lang === 'mm' ? 'ပင်မဆိုင်' : 'Main'}
+                          </span>
+                        )}
+                      </span>
+                      {isActive && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent-text)]">
+                          <Check className="w-3 h-3" />
+                          {lang === 'mm' ? 'လက်ရှိဆိုင်' : 'Active'}
                         </span>
                       )}
-                    </span>
-                    {isActive && (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent-text)]">
-                        <Check className="w-3 h-3" />
-                        {lang === 'mm' ? 'လက်ရှိဆိုင်' : 'Active'}
+                    </div>
+                    <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                      {lang === 'mm' ? branch.nameMm : branch.nameEn}
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                      {lang === 'mm' ? branch.addressMm : branch.addressEn}
+                    </div>
+                    <div className="mt-1 font-mono-num text-[11px] text-[var(--text-secondary)]">
+                      {branch.phone}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--border-subtle)]">
+                    {!isActive ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelectBranch(branch.id)}
+                        className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-surface-muted)] cursor-pointer"
+                      >
+                        {lang === 'mm' ? 'ဤဆိုင်ခွဲသို့ပြောင်းမည်' : 'Switch to Branch'}
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-[var(--text-muted)]">
+                        {lang === 'mm' ? 'POS တွင်အသုံးပြုနေသည်' : 'Selected for POS'}
                       </span>
                     )}
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-                    {lang === 'mm' ? branch.nameMm : branch.nameEn}
-                  </div>
-                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
-                    {lang === 'mm' ? branch.addressMm : branch.addressEn}
-                  </div>
-                  <div className="mt-1 font-mono-num text-[11px] text-[var(--text-secondary)]">
-                    {branch.phone}
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onEditBranch(branch)}
+                        aria-label="Edit branch"
+                        className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      {!branch.isMain && branches.length > 1 && (
+                        confirmDeleteBranchId === branch.id ? (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await onDeleteBranch(branch.id);
+                              setConfirmDeleteBranchId(null);
+                            }}
+                            className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 cursor-pointer"
+                          >
+                            {lang === 'mm' ? 'ဖျက်မည်' : 'Confirm'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteBranchId(branch.id)}
+                            aria-label="Delete branch"
+                            className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 text-[var(--text-muted)] hover:text-red-600 dark:hover:text-red-400 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
                 </div>
-
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--border-subtle)]">
-                  {!isActive ? (
-                    <button
-                      type="button"
-                      onClick={() => onSelectBranch(branch.id)}
-                      className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-surface-muted)] cursor-pointer"
-                    >
-                      {lang === 'mm' ? 'ဤဆိုင်ခွဲသို့ပြောင်းမည်' : 'Switch to Branch'}
-                    </button>
-                  ) : (
-                    <span className="text-[11px] text-[var(--text-muted)]">
-                      {lang === 'mm' ? 'POS တွင်အသုံးပြုနေသည်' : 'Selected for POS'}
-                    </span>
-                  )}
-
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => onEditBranch(branch)}
-                      aria-label="Edit branch"
-                      className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                    </button>
-                    {!branch.isMain && branches.length > 1 && (
-                      confirmDeleteBranchId === branch.id ? (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await onDeleteBranch(branch.id);
-                            setConfirmDeleteBranchId(null);
-                          }}
-                          className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 cursor-pointer"
-                        >
-                          {lang === 'mm' ? 'ဖျက်မည်' : 'Confirm'}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteBranchId(branch.id)}
-                          aria-label="Delete branch"
-                          className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 text-[var(--text-muted)] hover:text-red-600 dark:hover:text-red-400 cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Appearance & Theme Mode Panel */}
@@ -393,15 +464,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             <button
               type="button"
-              disabled={effectiveOffline || pendingSyncCount === 0}
-              onClick={onSyncNow}
-              className="flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] disabled:bg-[var(--bg-surface-muted)] disabled:text-[var(--text-muted)] cursor-pointer"
+              disabled={syncing}
+              onClick={handleManualSync}
+              className="flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>{lang === 'mm' ? 'ယခု Sync လုပ်မည်' : 'Sync Queue Now'}</span>
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              <span>
+                {syncing
+                  ? lang === 'mm'
+                    ? 'Sync လုပ်နေသည်...'
+                    : 'Syncing...'
+                  : lang === 'mm'
+                  ? 'ယခု Sync လုပ်မည်'
+                  : 'Sync to Firestore'}
+              </span>
             </button>
           </div>
         </div>
+
+        {syncResultBanner && (
+          <div
+            className={`rounded-lg border px-3.5 py-2 text-xs font-medium flex items-center gap-2 ${
+              syncResultBanner.kind === 'ok'
+                ? 'border-[var(--accent-soft-border)] bg-[var(--accent-soft)] text-[var(--accent-text)]'
+                : 'border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300'
+            }`}
+          >
+            {syncResultBanner.kind === 'ok' && <Check className="w-4 h-4 shrink-0" />}
+            <span>{syncResultBanner.msg}</span>
+          </div>
+        )}
 
         {/* Cloud Firestore Real-Time Sync & Offline Persistence */}
         <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -409,15 +501,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <Cloud className="w-5 h-5 text-[var(--accent-text)] mt-0.5 shrink-0" />
             <div>
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                {lang === 'mm'
-                  ? 'Firestore Cloud Real-Time Sync'
-                  : 'Firestore Cloud Real-Time Sync'}
+                Firestore Cloud Real-Time Sync (Anonymous Auth)
               </h3>
               <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                {authUser ? (
+                {!firebaseConfigured ? (
+                  lang === 'mm' ? (
+                    'VITE_FIREBASE_CONFIG Environment Variable မထည့်သွင်းရသေးပါ — Cloudflare Pages Env Vars တွင် ဆိုင်အလိုက် Firebase Config ထည့်ပေးပါ (လက်ရှိ Offline IndexedDB ဖြင့် အလုပ်လုပ်နေသည်)'
+                  ) : (
+                    'VITE_FIREBASE_CONFIG is not set — add this store’s Firebase JSON in Cloudflare Environment Variables (running locally via IndexedDB).'
+                  )
+                ) : authUser ? (
                   <>
-                    <span className="font-medium text-[var(--text-primary)]">
-                      {authUser.email ?? authUser.displayName ?? authUser.uid}
+                    {firebaseProjectId && (
+                      <>
+                        <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                          Project: {firebaseProjectId}
+                        </span>
+                        {' · '}
+                      </>
+                    )}
+                    <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                      UID: {authUser.uid.slice(0, 10)}...
                     </span>
                     {' · '}
                     {firestoreMeta.hasPendingWrites
@@ -429,67 +533,45 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         ? 'IndexedDB Cache မှ အလုပ်လုပ်နေသည်'
                         : 'Serving from IndexedDB Cache'
                       : lang === 'mm'
-                      ? 'ဆိုင်ခွဲ၊ ကုန်ပစ္စည်းနှင့် အရောင်းများ Real-Time ချိတ်ဆက်ထားသည်'
-                      : 'Branches, products & sales synced in real time'}
+                      ? 'ကုန်ပစ္စည်းနှင့် အရောင်းများ Real-Time ချိတ်ဆက်ထားသည်'
+                      : 'Products & sales synced in real time'}
                     {firestoreMeta.persistenceEnabled &&
                       (lang === 'mm'
                         ? ' · Offline Persistence ဖွင့်ပြီး'
                         : ' · Offline Persistence On')}
                   </>
                 ) : lang === 'mm' ? (
-                  'Google အကောင့်ဖြင့် ဝင်ရောက်၍ ဆိုင်ခွဲ၊ ကုန်ပစ္စည်းနှင့် အရောင်းမှတ်တမ်းများကို Cloud တွင် Real-Time သိမ်းဆည်းပါ'
+                  'Login ဝင်ရန်မလိုဘဲ Anonymous Auth ဖြင့် Firestore Cloud သို့ အလိုအလျောက် Sync လုပ်ပေးပါမည်'
                 ) : (
-                  'Sign in with Google to sync branches, products, and sales in real time with offline IndexedDB persistence'
+                  'Syncs data to Firestore automatically using Anonymous Auth without login'
                 )}
               </p>
-              {firestoreMeta.error && (
+              {(firestoreMeta.error || firebaseConfigError) && (
                 <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                  {firestoreMeta.error}
+                  {firestoreMeta.error || firebaseConfigError}
                 </p>
               )}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {authUser ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onPushCloudSync();
-                    setStatusMsg(
-                      lang === 'mm'
-                        ? 'ဒေတာများကို Firestore Cloud သို့ ပေးပို့နေပါသည်'
-                        : 'Pushing local data to Firestore...'
-                    );
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-muted)] cursor-pointer whitespace-nowrap"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{lang === 'mm' ? 'Cloud Sync ပြန်စစ်မည်' : 'Sync to Cloud'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onSignOutGoogle}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer whitespace-nowrap"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>{lang === 'mm' ? 'ထွက်မည်' : 'Sign Out'}</span>
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                disabled={authLoading}
-                onClick={onSignInGoogle}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-4 py-2 text-xs font-semibold text-white hover:bg-[var(--accent-primary-hover)] disabled:opacity-50 cursor-pointer whitespace-nowrap"
-              >
-                <LogIn className="w-3.5 h-3.5" />
-                <span>
-                  {lang === 'mm' ? 'Google ဖြင့် Cloud ချိတ်ဆက်မည်' : 'Sign in with Google'}
-                </span>
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={syncing}
+              onClick={handleManualSync}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3.5 py-2 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-muted)] disabled:opacity-60 cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              <span>
+                {syncing
+                  ? lang === 'mm'
+                    ? 'Sync လုပ်နေသည်...'
+                    : 'Syncing...'
+                  : lang === 'mm'
+                  ? 'Firestore သို့ Sync လုပ်မည်'
+                  : 'Sync to Firestore'}
+              </span>
+            </button>
           </div>
         </div>
       </div>

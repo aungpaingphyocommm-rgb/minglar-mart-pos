@@ -9,6 +9,7 @@ interface SalesReportViewProps {
   sales: Sale[];
   branches: Branch[];
   activeBranch: Branch;
+  multiBranchEnabled: boolean;
   lang: Language;
   isOffline: boolean;
   onViewReceipt: (sale: Sale) => void;
@@ -21,6 +22,7 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
   sales,
   branches,
   activeBranch,
+  multiBranchEnabled,
   lang,
   isOffline,
   onViewReceipt,
@@ -39,7 +41,7 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
     return sales.filter((sale) => {
-      if (branchScope === 'active' && sale.branchId && sale.branchId !== activeBranch.id) {
+      if (multiBranchEnabled && branchScope === 'active' && sale.branchId && sale.branchId !== activeBranch.id) {
         return false;
       }
       const ts = new Date(sale.createdAt).getTime();
@@ -188,7 +190,7 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {branches.length > 1 && (
+          {multiBranchEnabled && branches.length > 1 && (
             <div className="flex items-center gap-1 p-1 bg-[var(--segmented-bg)] rounded-lg">
               <button
                 type="button"
@@ -319,7 +321,7 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
       </div>
 
       {/* Multi-Branch Revenue Breakdown when viewing All Branches */}
-      {branches.length > 1 && branchScope === 'all' && (
+      {multiBranchEnabled && branches.length > 1 && branchScope === 'all' && (
         <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5">
           <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-3.5">
             {lang === 'mm' ? 'ဆိုင်ခွဲအလိုက် အရောင်းနှိုင်းယှဉ်ချက်' : 'Branch Performance Breakdown'}
@@ -471,7 +473,9 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
             <thead>
               <tr className="border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] text-[11px] font-semibold text-[var(--text-muted)]">
                 <th className="py-3 px-4">{lang === 'mm' ? 'ဘောင်ချာနံပါတ်' : 'Invoice No'}</th>
-                <th className="py-3 px-4">{lang === 'mm' ? 'ဆိုင်ခွဲ' : 'Branch'}</th>
+                {multiBranchEnabled && (
+                  <th className="py-3 px-4">{lang === 'mm' ? 'ဆိုင်ခွဲ' : 'Branch'}</th>
+                )}
                 <th className="py-3 px-4">{lang === 'mm' ? 'အချိန်' : 'Timestamp'}</th>
                 <th className="py-3 px-4">{lang === 'mm' ? 'ငွေပေးချေမှု' : 'Payment'}</th>
                 <th className="py-3 px-4 text-right">{lang === 'mm' ? 'ပစ္စည်း' : 'Items'}</th>
@@ -483,7 +487,7 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
             <tbody className="divide-y divide-[var(--border-subtle)] text-sm">
               {filteredSales.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-10 text-center text-sm text-[var(--text-muted)]">
+                  <td colSpan={multiBranchEnabled ? 8 : 7} className="py-10 text-center text-sm text-[var(--text-muted)]">
                     {lang === 'mm' ? 'ဘောင်ချာ မရှိသေးပါ' : 'No invoices found in this period'}
                   </td>
                 </tr>
@@ -531,11 +535,13 @@ export const SalesReportView: React.FC<SalesReportViewProps> = ({
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-xs text-[var(--text-secondary)] whitespace-nowrap">
-                        {lang === 'mm'
-                          ? sale.branchNameMm ?? activeBranch.nameMm
-                          : sale.branchNameEn ?? activeBranch.nameEn}
-                      </td>
+                      {multiBranchEnabled && (
+                        <td className="py-3 px-4 text-xs text-[var(--text-secondary)] whitespace-nowrap">
+                          {lang === 'mm'
+                            ? sale.branchNameMm ?? activeBranch.nameMm
+                            : sale.branchNameEn ?? activeBranch.nameEn}
+                        </td>
+                      )}
                       <td className="py-3 px-4 font-mono-num text-xs text-[var(--text-muted)] whitespace-nowrap">
                         {formatDateTime(sale.createdAt, lang)}
                       </td>

@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   defaultLanguage: 'mm',
   theme: 'light',
   activeBranchId: 'branch-1',
+  multiBranchEnabled: true,
   lastSyncedAt: new Date(now - 1000 * 60 * 35).toISOString(),
 };
 

@@ -131,5 +131,6 @@ export interface StoreSettings {
   defaultLanguage: Language;
   theme?: ThemeMode;
   activeBranchId?: string;
+  multiBranchEnabled?: boolean;
   lastSyncedAt: string | null;
 }

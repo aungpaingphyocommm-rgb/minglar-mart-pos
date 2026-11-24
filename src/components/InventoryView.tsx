@@ -18,6 +18,7 @@ interface InventoryViewProps {
   products: Product[];
   branches: Branch[];
   activeBranch: Branch;
+  multiBranchEnabled: boolean;
   lang: Language;
   onAddNew: () => void;
   onImportCsv: () => void;
@@ -31,6 +32,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   products,
   branches,
   activeBranch,
+  multiBranchEnabled,
   lang,
   onAddNew,
   onImportCsv,
@@ -99,12 +101,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-[var(--text-primary)]">{t(UI_TEXT.inventory.title, lang)}</h1>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            {lang === 'mm' ? 'လက်ရှိဆိုင်ခွဲ:' : 'Active Branch:'}{' '}
-            <span className="font-medium text-[var(--text-secondary)]">
-              {activeBranch.code} · {lang === 'mm' ? activeBranch.nameMm : activeBranch.nameEn}
-            </span>
-          </p>
+          {multiBranchEnabled && (
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              {lang === 'mm' ? 'လက်ရှိဆိုင်ခွဲ:' : 'Active Branch:'}{' '}
+              <span className="font-medium text-[var(--text-secondary)]">
+                {activeBranch.code} · {lang === 'mm' ? activeBranch.nameMm : activeBranch.nameEn}
+              </span>
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
@@ -146,7 +150,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
         <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
           <div className="text-xs font-medium text-[var(--text-muted)]">
-            {t(UI_TEXT.inventory.totalUnits, lang)} ({activeBranch.code})
+            {t(UI_TEXT.inventory.totalUnits, lang)}
+            {multiBranchEnabled ? ` (${activeBranch.code})` : ''}
           </div>
           <div className="mt-1.5 text-2xl font-bold font-mono-num text-[var(--text-primary)]">
             {stats.totalUnits.toLocaleString('en-US')}
@@ -298,7 +303,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         >
                           {product.stock} {lang === 'mm' ? product.unitMm : product.unitEn}
                         </div>
-                        {branches.length > 1 && (
+                        {multiBranchEnabled && branches.length > 1 && (
                           <div className="font-mono-num text-[11px] text-[var(--text-muted)]">
                             {lang === 'mm' ? 'စုစုပေါင်း' : 'All'}: {totalAllBranches}
                           </div>
@@ -327,7 +332,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             <PackagePlus className="w-3.5 h-3.5" />
                             <span>{t(UI_TEXT.inventory.restock, lang)}</span>
                           </button>
-                          {branches.length > 1 && (
+                          {multiBranchEnabled && branches.length > 1 && (
                             <button
                               type="button"
                               onClick={() => onTransfer(product)}

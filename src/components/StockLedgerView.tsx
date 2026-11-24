@@ -8,6 +8,7 @@ interface StockLedgerViewProps {
   movements: StockMovement[];
   branches: Branch[];
   activeBranch: Branch;
+  multiBranchEnabled: boolean;
   lang: Language;
 }
 
@@ -15,6 +16,7 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
   movements,
   branches,
   activeBranch,
+  multiBranchEnabled,
   lang,
 }) => {
   const [typeFilter, setTypeFilter] = useState<MovementType | 'all'>('all');
@@ -24,7 +26,9 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return movements.filter((m) => {
-      if (branchScope === 'active' && m.branchId && m.branchId !== activeBranch.id) return false;
+      if (multiBranchEnabled && branchScope === 'active' && m.branchId && m.branchId !== activeBranch.id) {
+        return false;
+      }
       if (typeFilter !== 'all' && m.type !== typeFilter) return false;
       if (!q) return true;
       return (
@@ -50,7 +54,7 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
           </p>
         </div>
 
-        {branches.length > 1 && (
+        {multiBranchEnabled && branches.length > 1 && (
           <div className="inline-flex items-center gap-1 p-1 bg-[var(--segmented-bg)] rounded-lg shrink-0 self-start">
             <button
               type="button"
@@ -120,7 +124,9 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
             <thead>
               <tr className="border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] text-[11px] font-semibold text-[var(--text-muted)]">
                 <th className="py-3 px-4">{lang === 'mm' ? 'အချိန်' : 'Timestamp'}</th>
-                <th className="py-3 px-4">{lang === 'mm' ? 'ဆိုင်ခွဲ' : 'Branch'}</th>
+                {multiBranchEnabled && (
+                  <th className="py-3 px-4">{lang === 'mm' ? 'ဆိုင်ခွဲ' : 'Branch'}</th>
+                )}
                 <th className="py-3 px-4">{lang === 'mm' ? 'ပစ္စည်း' : 'Product'}</th>
                 <th className="py-3 px-4">{lang === 'mm' ? 'အမျိုးအစား' : 'Type'}</th>
                 <th className="py-3 px-4 text-right">{lang === 'mm' ? 'အပြောင်းအလဲ' : 'Delta'}</th>
@@ -131,7 +137,7 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
             <tbody className="divide-y divide-[var(--border-subtle)] text-sm">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-sm text-[var(--text-muted)]">
+                  <td colSpan={multiBranchEnabled ? 7 : 6} className="py-10 text-center text-sm text-[var(--text-muted)]">
                     {lang === 'mm' ? 'မှတ်တမ်း မရှိသေးပါ' : 'No stock movements recorded yet'}
                   </td>
                 </tr>
@@ -141,11 +147,13 @@ export const StockLedgerView: React.FC<StockLedgerViewProps> = ({
                     <td className="py-3 px-4 font-mono-num text-xs text-[var(--text-muted)] whitespace-nowrap">
                       {formatDateTime(m.createdAt, lang)}
                     </td>
-                    <td className="py-3 px-4 text-xs text-[var(--text-secondary)] whitespace-nowrap">
-                      {lang === 'mm'
-                        ? m.branchNameMm ?? activeBranch.nameMm
-                        : m.branchNameEn ?? activeBranch.nameEn}
-                    </td>
+                    {multiBranchEnabled && (
+                      <td className="py-3 px-4 text-xs text-[var(--text-secondary)] whitespace-nowrap">
+                        {lang === 'mm'
+                          ? m.branchNameMm ?? activeBranch.nameMm
+                          : m.branchNameEn ?? activeBranch.nameEn}
+                      </td>
+                    )}
                     <td className="py-3 px-4">
                       <div className="font-medium text-[var(--text-primary)]">
                         {lang === 'mm' ? m.productNameMm : m.productNameEn}

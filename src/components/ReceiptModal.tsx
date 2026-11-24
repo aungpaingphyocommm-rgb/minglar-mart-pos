@@ -9,6 +9,7 @@ interface ReceiptModalProps {
   sale: Sale | null;
   branches: Branch[];
   settings: StoreSettings;
+  multiBranchEnabled: boolean;
   lang: Language;
   onClose: () => void;
   onReverseSale?: (sale: Sale) => void;
@@ -18,13 +19,14 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   sale,
   branches,
   settings,
+  multiBranchEnabled,
   lang,
   onClose,
   onReverseSale,
 }) => {
   if (!sale) return null;
 
-  const saleBranch = branches.find((b) => b.id === sale.branchId);
+  const saleBranch = multiBranchEnabled ? branches.find((b) => b.id === sale.branchId) : undefined;
   const canReverse = Boolean(onReverseSale) && hasReturnableItems(sale);
 
   const handlePrint = () => {
@@ -81,7 +83,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               <h2 className="text-base font-bold tracking-tight">
                 {lang === 'mm' ? settings.storeNameMm : settings.storeNameEn}
               </h2>
-              {(saleBranch || sale.branchNameMm) && (
+              {multiBranchEnabled && (saleBranch || sale.branchNameMm) && (
                 <p className="mt-0.5 text-[11px] font-semibold text-slate-800">
                   {lang === 'mm'
                     ? saleBranch?.nameMm ?? sale.branchNameMm
@@ -90,11 +92,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               )}
               <p className="mt-1 text-[11px] text-slate-600 leading-snug">
                 {lang === 'mm'
-                  ? saleBranch?.addressMm || settings.addressMm
-                  : saleBranch?.addressEn || settings.addressEn}
+                  ? (multiBranchEnabled ? saleBranch?.addressMm : undefined) || settings.addressMm
+                  : (multiBranchEnabled ? saleBranch?.addressEn : undefined) || settings.addressEn}
               </p>
               <p className="mt-0.5 font-mono-num text-[11px] text-slate-600">
-                Tel: {saleBranch?.phone || settings.phone}
+                Tel: {(multiBranchEnabled ? saleBranch?.phone : undefined) || settings.phone}
               </p>
             </div>
 

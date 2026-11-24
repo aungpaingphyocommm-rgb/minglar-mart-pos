@@ -20,6 +20,7 @@ interface SaleReversalModalProps {
   sales: Sale[];
   branches: Branch[];
   activeBranch: Branch;
+  multiBranchEnabled: boolean;
   lang: Language;
   onClose: () => void;
   onConfirmReversal: (params: {
@@ -51,6 +52,7 @@ export const SaleReversalModal: React.FC<SaleReversalModalProps> = ({
   sales,
   branches,
   activeBranch,
+  multiBranchEnabled,
   lang,
   onClose,
   onConfirmReversal,
@@ -93,9 +95,9 @@ export const SaleReversalModal: React.FC<SaleReversalModalProps> = ({
     } else {
       setSelectedSaleId(null);
       setReturnQtys({});
-      setBranchFilter(branches.length > 1 ? 'active' : 'all');
+      setBranchFilter(multiBranchEnabled && branches.length > 1 ? 'active' : 'all');
     }
-  }, [isOpen, initialSale, lang, branches.length]);
+  }, [isOpen, initialSale, lang, branches.length, multiBranchEnabled]);
 
   const handleSelectInvoice = (sale: Sale) => {
     setSelectedSaleId(sale.id);
@@ -111,7 +113,7 @@ export const SaleReversalModal: React.FC<SaleReversalModalProps> = ({
   const filteredInvoices = useMemo(() => {
     const q = invoiceSearch.trim().toLowerCase();
     return reversibleSales.filter((sale) => {
-      if (branchFilter === 'active' && sale.branchId && sale.branchId !== activeBranch.id) {
+      if (multiBranchEnabled && branchFilter === 'active' && sale.branchId && sale.branchId !== activeBranch.id) {
         return false;
       }
       if (!q) return true;
@@ -291,7 +293,7 @@ export const SaleReversalModal: React.FC<SaleReversalModalProps> = ({
                 />
               </div>
 
-              {branches.length > 1 && (
+              {multiBranchEnabled && branches.length > 1 && (
                 <div className="flex items-center gap-1 p-1 bg-[var(--segmented-bg)] rounded-lg shrink-0">
                   <button
                     type="button"

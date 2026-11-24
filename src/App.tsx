@@ -41,6 +41,7 @@ import {
   deleteIdsFromFirestore,
   deleteProductFromFirestore,
   pushSnapshotToFirestore,
+  pushSnapshotToFirestoreAsync,
   resetKnownFirestoreIds,
   subscribeToStoreCollections,
   syncBranchToFirestore,
@@ -69,7 +70,16 @@ import {
   syncPendingRecords,
   transferProductStock,
 } from './db/offlineDb';
-import { auth, db, persistencePromise, signInWithGoogle, signOutUser } from './firebase';
+import {
+  auth,
+  db,
+  ensureAnonymousAuth,
+  firebaseConfigError,
+  firebaseProjectId,
+  isFirebaseConfigured,
+  persistencePromise,
+  recoverFromTargetIdConflict,
+} from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { UI_TEXT, t } from './i18n/translations';
 import {
@@ -126,7 +136,6 @@ export default function App() {
 
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [authLoading, setAuthLoading] = useState(false);
   const [firestoreMeta, setFirestoreMeta] = useState({
     active: false,
     persistenceEnabled: false,
@@ -143,6 +152,7 @@ export default function App() {
     settings: DEFAULT_SETTINGS,
   });
   latestSnapshotRef.current = { products, sales, movements, branches, settings };
+  const wasSimulatedOfflineRef = useRef(false);
 
   const isOffline = !isBrowserOnline || simulatedOffline;
 
@@ -181,21 +191,33 @@ export default function App() {
         setFirestoreMeta((prev) => ({ ...prev, persistenceEnabled: enabled }));
       }
     });
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (!active) return;
-      setAuthUser(user);
+    let unsubAuth: (() => void) | null = null;
+    if (!isFirebaseConfigured || !auth) {
       setAuthReady(true);
-      if (!user) {
-        resetKnownFirestoreIds();
-        setFirestoreMeta((prev) => ({
-          ...prev,
-          active: false,
-          fromCache: false,
-          hasPendingWrites: false,
-          error: null,
-        }));
-      }
-    });
+    } else {
+      unsubAuth = onAuthStateChanged(auth, (user) => {
+        if (!active) return;
+        setAuthUser(user);
+        setAuthReady(true);
+        if (!user || !user.isAnonymous) {
+          resetKnownFirestoreIds();
+          setFirestoreMeta((prev) => ({
+            ...prev,
+            active: false,
+            fromCache: false,
+            hasPendingWrites: false,
+            error: null,
+          }));
+          if (navigator.onLine) {
+            void ensureAnonymousAuth().catch((err) => {
+              if (!active) return;
+              const msg = err instanceof Error ? err.message : String(err);
+              setFirestoreMeta((prev) => ({ ...prev, error: msg }));
+            });
+          }
+        }
+      });
+    }
     initAndLoadSnapshot().then((snap) => {
       if (!active) return;
       setProducts(snap.products);
@@ -211,14 +233,17 @@ export default function App() {
     });
     return () => {
       active = false;
-      unsubAuth();
+      if (unsubAuth) unsubAuth();
     };
   }, []);
 
   useEffect(() => {
+    if (!db) return;
     if (simulatedOffline) {
+      wasSimulatedOfflineRef.current = true;
       void disableNetwork(db).catch(() => {});
-    } else {
+    } else if (wasSimulatedOfflineRef.current) {
+      wasSimulatedOfflineRef.current = false;
       void enableNetwork(db).catch(() => {});
     }
   }, [simulatedOffline]);
@@ -231,12 +256,17 @@ export default function App() {
     } catch {
       // Keep raw message
     }
+    if (msg.includes('Target ID already exists')) {
+      void recoverFromTargetIdConflict(msg);
+    }
     setFirestoreMeta((prev) => ({ ...prev, error: msg }));
   }, []);
 
-  // Attach real-time Firestore listeners once auth is ready & verified
+  const cloudUid = authUser?.isAnonymous ? authUser.uid : null;
+
+  // Attach real-time Firestore listeners once Anonymous Auth is ready
   useEffect(() => {
-    if (!authReady || loading || !authUser || !authUser.emailVerified) {
+    if (!authReady || loading || !cloudUid) {
       return;
     }
 
@@ -244,7 +274,7 @@ export default function App() {
     setFirestoreMeta((prev) => ({ ...prev, active: true, error: null }));
 
     const unsubscribe = subscribeToStoreCollections({
-      ownerId: authUser.uid,
+      ownerId: cloudUid,
       onBranches: (remoteBranches, meta) => {
         setFirestoreMeta((prev) => ({
           ...prev,
@@ -304,7 +334,7 @@ export default function App() {
       onInitialEmptyCloud: () => {
         cloudInitialized = true;
         pushSnapshotToFirestore(
-          authUser.uid,
+          cloudUid,
           latestSnapshotRef.current,
           handleFirestoreSyncError
         );
@@ -315,16 +345,17 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [authReady, authUser, loading, handleFirestoreSyncError]);
+  }, [authReady, cloudUid, loading, handleFirestoreSyncError]);
 
-  const activeBranch = useMemo(
-    () =>
-      branches.find((b) => b.id === settings.activeBranchId) ??
-      branches.find((b) => b.isMain) ??
-      branches[0] ??
-      SEED_BRANCHES[0],
-    [branches, settings.activeBranchId]
-  );
+  const multiBranchEnabled = settings.multiBranchEnabled !== false;
+
+  const activeBranch = useMemo(() => {
+    const mainBranch = branches.find((b) => b.isMain) ?? branches[0] ?? SEED_BRANCHES[0];
+    if (!multiBranchEnabled) {
+      return mainBranch;
+    }
+    return branches.find((b) => b.id === settings.activeBranchId) ?? mainBranch;
+  }, [branches, settings.activeBranchId, multiBranchEnabled]);
 
   // Scope products to the active branch's stock level while preserving full branchStocks map
   const branchProducts = useMemo(
@@ -355,26 +386,20 @@ export default function App() {
     }
   }, [isOffline, pendingSyncCount, reloadSnapshot]);
 
-  const cloudUid = authUser?.emailVerified ? authUser.uid : null;
+  // cloudUid is derived above auth listener effect
 
-  const handleSignInGoogle = async () => {
-    setAuthLoading(true);
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      handleFirestoreSyncError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      setAuthLoading(false);
+  const handleToggleMultiBranch = async (enabled: boolean) => {
+    const mainBranch = branches.find((b) => b.isMain) ?? branches[0] ?? SEED_BRANCHES[0];
+    const updated: StoreSettings = {
+      ...settings,
+      multiBranchEnabled: enabled,
+      activeBranchId: enabled ? settings.activeBranchId ?? mainBranch.id : mainBranch.id,
+    };
+    setSettings(updated);
+    await saveSettings(updated);
+    if (cloudUid) {
+      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
     }
-  };
-
-  const handleSignOutGoogle = async () => {
-    await signOutUser();
-  };
-
-  const handlePushCloudSync = () => {
-    if (!cloudUid) return;
-    pushSnapshotToFirestore(cloudUid, latestSnapshotRef.current, handleFirestoreSyncError);
   };
 
   const handleSelectBranch = async (branchId: string) => {
@@ -594,12 +619,37 @@ export default function App() {
   };
 
   const handleSyncNow = async () => {
-    if (isOffline) return;
+    if (!isFirebaseConfigured || !auth || !db) {
+      throw new Error(
+        lang === 'mm'
+          ? 'VITE_FIREBASE_CONFIG Environment Variable မထည့်သွင်းရသေးပါ'
+          : firebaseConfigError ?? 'VITE_FIREBASE_CONFIG is not configured.'
+      );
+    }
+
+    let uid = cloudUid;
+    if (!uid) {
+      if (isOffline) {
+        throw new Error(
+          lang === 'mm'
+            ? 'Firestore သို့ Sync လုပ်ရန် အင်တာနက် ချိတ်ဆက်ပေးပါ'
+            : 'Connect to the internet to initialize Anonymous Cloud Sync'
+        );
+      }
+      const anonUser = await ensureAnonymousAuth();
+      uid = anonUser.uid;
+    }
+
     await syncPendingRecords();
     const snap = await reloadSnapshot();
-    if (cloudUid) {
-      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
-    }
+    await pushSnapshotToFirestoreAsync(uid, snap, isOffline, handleFirestoreSyncError);
+    const syncedSettings: StoreSettings = {
+      ...snap.settings,
+      lastSyncedAt: new Date().toISOString(),
+    };
+    await saveSettings(syncedSettings);
+    setSettings(syncedSettings);
+    setFirestoreMeta((prev) => ({ ...prev, error: null }));
   };
 
   const handleRestoreBackup = async (snap: FullStoreSnapshot) => {
@@ -811,36 +861,38 @@ export default function App() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Active Branch Switcher */}
-          <div className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1">
-            <Store className="w-3.5 h-3.5 text-[var(--accent-text)] shrink-0" />
-            <select
-              aria-label={lang === 'mm' ? 'ဆိုင်ခွဲရွေးချယ်ရန်' : 'Select active store branch'}
-              value={activeBranch.id}
-              onChange={(e) => {
-                if (e.target.value === '__manage__') {
-                  setActiveTab('settings');
-                } else {
-                  handleSelectBranch(e.target.value);
-                }
-              }}
-              className="bg-transparent text-xs font-medium text-[var(--text-primary)] focus:outline-none cursor-pointer max-w-[200px] truncate"
-            >
-              {branches.map((b) => (
-                <option key={b.id} value={b.id} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
-                  {b.code} · {lang === 'mm' ? b.nameMm : b.nameEn}
+          {/* Active Branch Switcher (only shown when Multi-Branch Mode is On) */}
+          {multiBranchEnabled && (
+            <div className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1">
+              <Store className="w-3.5 h-3.5 text-[var(--accent-text)] shrink-0" />
+              <select
+                aria-label={lang === 'mm' ? 'ဆိုင်ခွဲရွေးချယ်ရန်' : 'Select active store branch'}
+                value={activeBranch.id}
+                onChange={(e) => {
+                  if (e.target.value === '__manage__') {
+                    setActiveTab('settings');
+                  } else {
+                    handleSelectBranch(e.target.value);
+                  }
+                }}
+                className="bg-transparent text-xs font-medium text-[var(--text-primary)] focus:outline-none cursor-pointer max-w-[200px] truncate"
+              >
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id} className="bg-[var(--bg-surface)] text-[var(--text-primary)]">
+                    {b.code} · {lang === 'mm' ? b.nameMm : b.nameEn}
+                  </option>
+                ))}
+                <option value="__manage__" className="bg-[var(--bg-surface)] text-[var(--accent-text)]">
+                  + {lang === 'mm' ? 'ဆိုင်ခွဲများ စီမံရန်...' : 'Manage Branches...'}
                 </option>
-              ))}
-              <option value="__manage__" className="bg-[var(--bg-surface)] text-[var(--accent-text)]">
-                + {lang === 'mm' ? 'ဆိုင်ခွဲများ စီမံရန်...' : 'Manage Branches...'}
-              </option>
-            </select>
-          </div>
+              </select>
+            </div>
+          )}
 
-          {/* Cloud Sync Quick Status / Sign-in */}
+          {/* Cloud Sync Quick Status */}
           <button
             type="button"
-            onClick={() => (authUser ? setActiveTab('settings') : void handleSignInGoogle())}
+            onClick={() => setActiveTab('settings')}
             className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-muted)] transition-colors cursor-pointer whitespace-nowrap"
           >
             <Cloud
@@ -851,21 +903,15 @@ export default function App() {
               }`}
             />
             <span>
-              {authUser
+              {!isFirebaseConfigured
+                ? 'Local Mode'
+                : authUser
                 ? firestoreMeta.hasPendingWrites
-                  ? lang === 'mm'
-                    ? 'Cloud Syncing...'
-                    : 'Cloud Syncing...'
+                  ? 'Cloud Syncing...'
                   : firestoreMeta.fromCache
-                  ? lang === 'mm'
-                    ? 'Cloud Cache'
-                    : 'Cloud Cache'
-                  : lang === 'mm'
-                  ? 'Cloud Synced'
+                  ? 'Cloud Cache'
                   : 'Cloud Synced'
-                : lang === 'mm'
-                ? 'Cloud ချိတ်ဆက်'
-                : 'Cloud Sign In'}
+                : 'Cloud Sync'}
             </span>
           </button>
 
@@ -925,6 +971,7 @@ export default function App() {
             products={branchProducts}
             branches={branches}
             activeBranch={activeBranch}
+            multiBranchEnabled={multiBranchEnabled}
             lang={lang}
             onAddNew={() => {
               setEditingProduct(null);
@@ -944,6 +991,7 @@ export default function App() {
             movements={movements}
             branches={branches}
             activeBranch={activeBranch}
+            multiBranchEnabled={multiBranchEnabled}
             lang={lang}
           />
         ) : activeTab === 'sales' ? (
@@ -951,6 +999,7 @@ export default function App() {
             sales={sales}
             branches={branches}
             activeBranch={activeBranch}
+            multiBranchEnabled={multiBranchEnabled}
             lang={lang}
             isOffline={isOffline}
             onViewReceipt={(sale) => setReceiptSale(sale)}
@@ -961,12 +1010,14 @@ export default function App() {
             settings={settings}
             branches={branches}
             activeBranch={activeBranch}
+            multiBranchEnabled={multiBranchEnabled}
             lang={lang}
             theme={theme}
             isBrowserOnline={isBrowserOnline}
             simulatedOffline={simulatedOffline}
             pendingSyncCount={pendingSyncCount}
             snapshot={snapshot}
+            onToggleMultiBranch={handleToggleMultiBranch}
             onSelectBranch={handleSelectBranch}
             onAddBranch={() => {
               setEditingBranch(null);
@@ -985,20 +1036,18 @@ export default function App() {
             onDeleteSampleData={handleDeleteSampleData}
             onClearAllData={handleClearAllData}
             onResetDemo={handleResetDemo}
+            firebaseConfigured={isFirebaseConfigured}
+            firebaseProjectId={firebaseProjectId}
+            firebaseConfigError={firebaseConfigError}
             authUser={
               authUser
                 ? {
                     uid: authUser.uid,
-                    email: authUser.email,
-                    displayName: authUser.displayName,
+                    isAnonymous: authUser.isAnonymous,
                   }
                 : null
             }
-            authLoading={authLoading}
             firestoreMeta={firestoreMeta}
-            onSignInGoogle={handleSignInGoogle}
-            onSignOutGoogle={handleSignOutGoogle}
-            onPushCloudSync={handlePushCloudSync}
           />
         )}
       </main>
@@ -1008,6 +1057,7 @@ export default function App() {
         sale={receiptSale}
         branches={branches}
         settings={settings}
+        multiBranchEnabled={multiBranchEnabled}
         lang={lang}
         onClose={() => setReceiptSale(null)}
         onReverseSale={(sale) => setReversalModalState({ isOpen: true, initialSale: sale })}
@@ -1019,6 +1069,7 @@ export default function App() {
         sales={sales}
         branches={branches}
         activeBranch={activeBranch}
+        multiBranchEnabled={multiBranchEnabled}
         lang={lang}
         onClose={() => setReversalModalState({ isOpen: false, initialSale: null })}
         onConfirmReversal={handleReverseSale}

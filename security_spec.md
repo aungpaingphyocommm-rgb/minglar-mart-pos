@@ -1,7 +1,7 @@
 # Security Specification — Mingalar Mart POS Firestore Rules
 
 ## 1. Data Invariants
-1. **Store Isolation (`ownerId`)**: Every document in `branches`, `products`, `sales`, `movements`, and `settings` MUST carry an immutable `ownerId` matching `request.auth.uid` (verified Google user) or be accessed by the verified bootstrapped store admin (`aungpaingphyo.com.mm@gmail.com`).
+1. **Store Isolation (`ownerId`)**: Every document in `branches`, `products`, `sales`, `movements`, and `settings` MUST carry an immutable `ownerId` matching `request.auth.uid` (authenticated via Firebase Anonymous Auth) or be accessed by the verified bootstrapped store admin (`aungpaingphyo.com.mm@gmail.com`).
 2. **PII Protection**: Branch phone numbers and street addresses in `branches` and `settings` are readable ONLY by the owning store account or verified admin—never via blanket `isSignedIn()` reads.
 3. **Referential Integrity**: Creating a `Sale` MUST verify that `branchId` exists in `/branches/{branchId}` and belongs to the same `ownerId` (when created in standalone or batched writes).
 4. **Terminal State Locking on Sales**: Once a `Sale` reaches `status == 'voided'`, non-admin clients cannot modify it further. Partial reversals may only update `reversedItems`, `reversalReason`, `reversedAt`, `synced`, and `serverUpdatedAt`.

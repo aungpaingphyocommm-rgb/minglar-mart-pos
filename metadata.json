@@ -1,0 +1,6 @@
+{
+  "name": "Mingalar Mart POS",
+  "description": "Myanmar-language mini mart Point of Sale and offline-first inventory tracking system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

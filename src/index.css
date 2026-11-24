@@ -1,0 +1,90 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --bg-canvas: #f8fafc;
+    --bg-surface: #ffffff;
+    --bg-surface-muted: #f1f5f9;
+    --bg-surface-subtle: #f8fafc;
+    --border-subtle: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --accent-primary: #0f766e;
+    --accent-primary-hover: #115e59;
+    --accent-soft: #f0fdfa;
+    --accent-soft-hover: #ccfbf1;
+    --accent-soft-border: rgba(15, 118, 110, 0.25);
+    --accent-text: #115e59;
+    --nav-active-bg: #f0fdfa;
+    --segmented-bg: #e2e8f0;
+    --segmented-active: #ffffff;
+    font-family: "Plus Jakarta Sans", "Noto Sans Myanmar", system-ui, -apple-system, sans-serif;
+    color-scheme: light;
+  }
+
+  .dark {
+    --bg-canvas: #0b1120;
+    --bg-surface: #111827;
+    --bg-surface-muted: #1e293b;
+    --bg-surface-subtle: #162032;
+    --border-subtle: #1e293b;
+    --border-strong: #334155;
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+    --accent-primary: #0d9488;
+    --accent-primary-hover: #14b8a6;
+    --accent-soft: rgba(13, 148, 136, 0.16);
+    --accent-soft-hover: rgba(13, 148, 136, 0.26);
+    --accent-soft-border: rgba(45, 212, 191, 0.32);
+    --accent-text: #2dd4bf;
+    --nav-active-bg: rgba(13, 148, 136, 0.18);
+    --segmented-bg: #1e293b;
+    --segmented-active: #0f172a;
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: "Plus Jakarta Sans", "Noto Sans Myanmar", system-ui, -apple-system, sans-serif;
+    line-height: 1.55;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+}
+
+.font-mono-num {
+  font-family: "JetBrains Mono", "Noto Sans Myanmar", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thermal 80mm Receipt Print Layout */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  #thermal-receipt-print,
+  #thermal-receipt-print * {
+    visibility: visible !important;
+  }
+
+  #thermal-receipt-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80mm;
+    padding: 4mm;
+    background: #ffffff !important;
+    color: #000000 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}

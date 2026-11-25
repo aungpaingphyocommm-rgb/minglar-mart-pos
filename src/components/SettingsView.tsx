@@ -505,11 +505,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </h3>
               <p className="text-xs text-[var(--text-muted)] mt-0.5">
                 {!firebaseConfigured ? (
-                  lang === 'mm' ? (
-                    'VITE_FIREBASE_CONFIG Environment Variable မထည့်သွင်းရသေးပါ — Cloudflare Pages Env Vars တွင် ဆိုင်အလိုက် Firebase Config ထည့်ပေးပါ (လက်ရှိ Offline IndexedDB ဖြင့် အလုပ်လုပ်နေသည်)'
-                  ) : (
-                    'VITE_FIREBASE_CONFIG is not set — add this store’s Firebase JSON in Cloudflare Environment Variables (running locally via IndexedDB).'
-                  )
+                  <span className="text-red-600 dark:text-red-400 font-medium">
+                    VITE_FIREBASE_CONFIG missing or invalid JSON
+                  </span>
                 ) : authUser ? (
                   <>
                     {firebaseProjectId && (
@@ -546,10 +544,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   'Syncs data to Firestore automatically using Anonymous Auth without login'
                 )}
               </p>
-              {(firestoreMeta.error || firebaseConfigError) && (
-                <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                  {firestoreMeta.error || firebaseConfigError}
+              {!firebaseConfigured ? (
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  {lang === 'mm'
+                    ? 'Cloudflare Pages Env Vars တွင် VITE_FIREBASE_CONFIG (သို့) VITE_FIREBASE_API_KEY + VITE_FIREBASE_PROJECT_ID ထည့်သွင်းပြီး Redeploy လုပ်ပါ။'
+                    : 'Set VITE_FIREBASE_CONFIG (or individual VITE_FIREBASE_* variables) in Cloudflare Pages and trigger a new build.'}
                 </p>
+              ) : (
+                (firestoreMeta.error || firebaseConfigError) && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                    {firestoreMeta.error || firebaseConfigError}
+                  </p>
+                )
               )}
             </div>
           </div>

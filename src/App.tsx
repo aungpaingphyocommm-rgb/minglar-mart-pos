@@ -620,11 +620,7 @@ export default function App() {
 
   const handleSyncNow = async () => {
     if (!isFirebaseConfigured || !auth || !db) {
-      throw new Error(
-        lang === 'mm'
-          ? 'VITE_FIREBASE_CONFIG Environment Variable မထည့်သွင်းရသေးပါ'
-          : firebaseConfigError ?? 'VITE_FIREBASE_CONFIG is not configured.'
-      );
+      throw new Error(firebaseConfigError ?? 'VITE_FIREBASE_CONFIG missing or invalid JSON');
     }
 
     let uid = cloudUid;

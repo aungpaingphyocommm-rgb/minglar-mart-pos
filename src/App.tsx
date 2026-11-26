@@ -75,6 +75,7 @@ import {
   db,
   ensureAnonymousAuth,
   firebaseConfigError,
+  firebaseConfigSource,
   firebaseProjectId,
   isFirebaseConfigured,
   persistencePromise,
@@ -1034,6 +1035,7 @@ export default function App() {
             onResetDemo={handleResetDemo}
             firebaseConfigured={isFirebaseConfigured}
             firebaseProjectId={firebaseProjectId}
+            firebaseConfigSource={firebaseConfigSource}
             firebaseConfigError={firebaseConfigError}
             authUser={
               authUser

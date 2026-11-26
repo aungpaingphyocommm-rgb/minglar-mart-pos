@@ -50,6 +50,7 @@ interface SettingsViewProps {
   onResetDemo: () => Promise<void>;
   firebaseConfigured: boolean;
   firebaseProjectId: string | null;
+  firebaseConfigSource: 'VITE_FIREBASE_CONFIG' | 'VITE_FIREBASE_*' | null;
   firebaseConfigError: string | null;
   authUser: { uid: string; isAnonymous: boolean } | null;
   firestoreMeta: {
@@ -87,6 +88,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onResetDemo,
   firebaseConfigured,
   firebaseProjectId,
+  firebaseConfigSource,
   firebaseConfigError,
   authUser,
   firestoreMeta,
@@ -539,9 +541,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         : ' · Offline Persistence On')}
                   </>
                 ) : lang === 'mm' ? (
-                  'Login ဝင်ရန်မလိုဘဲ Anonymous Auth ဖြင့် Firestore Cloud သို့ အလိုအလျောက် Sync လုပ်ပေးပါမည်'
+                  <>
+                    {firebaseProjectId && (
+                      <>
+                        <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                          Project: {firebaseProjectId}
+                        </span>
+                        {firebaseConfigSource && ` (${firebaseConfigSource})`}
+                        {' · '}
+                      </>
+                    )}
+                    Login ဝင်ရန်မလိုဘဲ Anonymous Auth ဖြင့် Firestore Cloud သို့ အလိုအလျောက် Sync လုပ်ပေးပါမည်
+                  </>
                 ) : (
-                  'Syncs data to Firestore automatically using Anonymous Auth without login'
+                  <>
+                    {firebaseProjectId && (
+                      <>
+                        <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                          Project: {firebaseProjectId}
+                        </span>
+                        {firebaseConfigSource && ` (${firebaseConfigSource})`}
+                        {' · '}
+                      </>
+                    )}
+                    Syncs data to Firestore automatically using Anonymous Auth without login
+                  </>
                 )}
               </p>
               {!firebaseConfigured ? (
@@ -551,7 +575,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     : 'Set VITE_FIREBASE_CONFIG (or individual VITE_FIREBASE_* variables) in Cloudflare Pages and trigger a new build.'}
                 </p>
               ) : (
-                (firestoreMeta.error || firebaseConfigError) && (
+                (firestoreMeta.error || firebaseConfigError) &&
+                syncResultBanner?.msg !== (firestoreMeta.error || firebaseConfigError) && (
                   <p className="mt-1 text-xs text-red-600 dark:text-red-400">
                     {firestoreMeta.error || firebaseConfigError}
                   </p>

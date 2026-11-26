@@ -29,13 +29,30 @@ const MISSING_OR_INVALID_CONFIG_MSG = 'VITE_FIREBASE_CONFIG missing or invalid J
 
 function sanitizeEnvValue(val: unknown): string | undefined {
   if (typeof val !== 'string') return undefined;
-  let cleaned = val.trim();
+  let cleaned = val
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+    .trim();
+
+  // Strip accidental trailing comma copied from a JSON/JS snippet
+  if (cleaned.endsWith(',') && !cleaned.startsWith('{')) {
+    cleaned = cleaned.slice(0, -1).trim();
+  }
+
   if (
     (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
     (cleaned.startsWith("'") && cleaned.endsWith("'"))
   ) {
     cleaned = cleaned.slice(1, -1).trim();
   }
+
+  // Handle double-quoted + trailing comma like '"AIza...",'
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('",')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("',"))
+  ) {
+    cleaned = cleaned.slice(1, -2).trim();
+  }
+
   if (!cleaned || cleaned === 'undefined' || cleaned === 'null' || cleaned === '...') {
     return undefined;
   }
@@ -44,34 +61,78 @@ function sanitizeEnvValue(val: unknown): string | undefined {
 
 function isValidApiKeyFormat(key: string | undefined): key is string {
   if (!key) return false;
-  if (key.length < 20) return false;
   if (/\s/.test(key)) return false;
-  if (key.includes('MY_') || key.includes('YOUR_')) return false;
-  return true;
+  if (key.includes('MY_') || key.includes('YOUR_') || key.includes('*')) return false;
+  return /^AIza[0-9A-Za-z_-]{30,}$/.test(key);
+}
+
+function normalizeJsObjectSnippetToJson(input: string): string {
+  let text = input.trim();
+  // Strip `export default` or `const firebaseConfig =` prefix and trailing `;`
+  text = text.replace(/^(?:export\s+default\s+|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)/, '');
+  text = text.replace(/;\s*$/, '').trim();
+  // Strip block comments and standalone // comments
+  text = text.replace(/\/\*[\s\S]*?\*\//g, '');
+  text = text.replace(/^\s*\/\/.*$/gm, '');
+  // Convert single-quoted values/keys to double-quoted
+  text = text.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_m, inner: string) => {
+    const unescaped = inner.replace(/\\'/g, "'").replace(/"/g, '\\"');
+    return `"${unescaped}"`;
+  });
+  // Quote standard unquoted Firebase config keys
+  text = text.replace(
+    /([{,]\s*)(apiKey|authDomain|projectId|storageBucket|messagingSenderId|appId|measurementId|firestoreDatabaseId)\s*:/g,
+    '$1"$2":'
+  );
+  // Remove trailing commas before closing brace
+  text = text.replace(/,\s*}/g, '}');
+  return text;
+}
+
+function tryParseJsonObject(raw: string): EnvFirebaseConfig | null {
+  let parsed: unknown = JSON.parse(raw);
+  if (typeof parsed === 'string') {
+    parsed = JSON.parse(parsed);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Parsed value is not a JSON object');
+  }
+  return parsed as EnvFirebaseConfig;
 }
 
 function parseFirebaseConfigJson(rawConfig: string): EnvFirebaseConfig | null {
   let candidate = rawConfig
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
     .trim();
 
-  if (
-    (candidate.startsWith("'") && candidate.endsWith("'")) ||
-    (candidate.startsWith('"') && candidate.endsWith('"') && candidate.includes('\\"'))
-  ) {
+  // First attempt: strict JSON.parse (also handles double-encoded JSON strings natively)
+  try {
+    return tryParseJsonObject(candidate);
+  } catch {
+    // Continue to normalization fallbacks
+  }
+
+  // Strip outer single quotes `'{"apiKey":...}'` if wrapped in shell/dashboard
+  if (candidate.startsWith("'") && candidate.endsWith("'")) {
     candidate = candidate.slice(1, -1).trim();
   }
 
+  // Unescape `\"` if user pasted escaped JSON without outer quotes
+  if (candidate.includes('\\"') && !candidate.startsWith('"')) {
+    candidate = candidate.replace(/\\"/g, '"');
+  }
+
   try {
-    let parsed: unknown = JSON.parse(candidate);
-    if (typeof parsed === 'string') {
-      parsed = JSON.parse(parsed);
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Parsed value is not a JSON object');
-    }
-    return parsed as EnvFirebaseConfig;
+    return tryParseJsonObject(candidate);
+  } catch {
+    // Try normalizing Firebase Console JS snippet syntax (unquoted keys, trailing commas, single quotes)
+  }
+
+  try {
+    const normalized = normalizeJsObjectSnippetToJson(candidate);
+    return tryParseJsonObject(normalized);
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'Invalid JSON syntax';
     // Log parse failure safely without printing raw config or apiKey
@@ -80,10 +141,13 @@ function parseFirebaseConfigJson(rawConfig: string): EnvFirebaseConfig | null {
   }
 }
 
+export type FirebaseConfigSource = 'VITE_FIREBASE_CONFIG' | 'VITE_FIREBASE_*' | null;
+
 function loadConfigFromEnv(): {
   config: FirebaseOptions | null;
   databaseId: string | undefined;
   error: string | null;
+  source: FirebaseConfigSource;
 } {
   // Vite replaces static import.meta.env.VITE_* references at build time
   const rawJson = import.meta.env.VITE_FIREBASE_CONFIG;
@@ -98,25 +162,52 @@ function loadConfigFromEnv(): {
   const fallbackMeasurementId = sanitizeEnvValue(import.meta.env.VITE_FIREBASE_MEASUREMENT_ID);
   const fallbackDatabaseId = sanitizeEnvValue(import.meta.env.VITE_FIREBASE_DATABASE_ID);
 
-  let parsedJson: EnvFirebaseConfig | null = null;
-  if (typeof rawJson === 'string' && rawJson.trim().length > 0) {
-    parsedJson = parseFirebaseConfigJson(rawJson);
-  }
+  const hasRawJson = typeof rawJson === 'string' && rawJson.trim().length > 0;
+  const parsedJson = hasRawJson ? parseFirebaseConfigJson(rawJson) : null;
 
-  const apiKey = sanitizeEnvValue(parsedJson?.apiKey) ?? fallbackApiKey;
-  const authDomain = sanitizeEnvValue(parsedJson?.authDomain) ?? fallbackAuthDomain;
-  const projectId = sanitizeEnvValue(parsedJson?.projectId) ?? fallbackProjectId;
-  const storageBucket = sanitizeEnvValue(parsedJson?.storageBucket) ?? fallbackStorageBucket;
-  const messagingSenderId =
-    sanitizeEnvValue(parsedJson?.messagingSenderId) ?? fallbackMessagingSenderId;
-  const appId = sanitizeEnvValue(parsedJson?.appId) ?? fallbackAppId;
-  const measurementId = sanitizeEnvValue(parsedJson?.measurementId) ?? fallbackMeasurementId;
-
-  if (!isValidApiKeyFormat(apiKey) || !projectId) {
+  if (hasRawJson && !parsedJson) {
     return {
       config: null,
       databaseId: undefined,
       error: MISSING_OR_INVALID_CONFIG_MSG,
+      source: null,
+    };
+  }
+
+  const useJsonConfig = Boolean(parsedJson);
+  const apiKey = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.apiKey) ?? fallbackApiKey
+    : fallbackApiKey;
+  const authDomain = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.authDomain) ?? fallbackAuthDomain
+    : fallbackAuthDomain;
+  const projectId = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.projectId) ?? fallbackProjectId
+    : fallbackProjectId;
+  const storageBucket = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.storageBucket) ?? fallbackStorageBucket
+    : fallbackStorageBucket;
+  const messagingSenderId = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.messagingSenderId) ?? fallbackMessagingSenderId
+    : fallbackMessagingSenderId;
+  const appId = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.appId) ?? fallbackAppId
+    : fallbackAppId;
+  const measurementId = useJsonConfig
+    ? sanitizeEnvValue(parsedJson?.measurementId) ?? fallbackMeasurementId
+    : fallbackMeasurementId;
+
+  if (!isValidApiKeyFormat(apiKey) || !projectId) {
+    if (typeof apiKey === 'string' && !/^AIza[0-9A-Za-z_-]{30,}$/.test(apiKey)) {
+      console.error(
+        `Configured Firebase apiKey has invalid format (length=${apiKey.length}). Expected a valid AIza... Web API key.`
+      );
+    }
+    return {
+      config: null,
+      databaseId: undefined,
+      error: MISSING_OR_INVALID_CONFIG_MSG,
+      source: null,
     };
   }
 
@@ -134,7 +225,12 @@ function loadConfigFromEnv(): {
     ...(measurementId ? { measurementId } : {}),
   };
 
-  return { config: cleanOptions, databaseId, error: null };
+  return {
+    config: cleanOptions,
+    databaseId,
+    error: null,
+    source: useJsonConfig ? 'VITE_FIREBASE_CONFIG' : 'VITE_FIREBASE_*',
+  };
 }
 
 const envConfig = loadConfigFromEnv();
@@ -142,6 +238,7 @@ const envConfig = loadConfigFromEnv();
 export const isFirebaseConfigured = Boolean(envConfig.config);
 export const firebaseConfigError: string | null = envConfig.error;
 export const firebaseProjectId: string | null = envConfig.config?.projectId ?? null;
+export const firebaseConfigSource: FirebaseConfigSource = envConfig.source;
 
 function initFirebaseServices(): {
   app: FirebaseApp | null;
@@ -250,10 +347,10 @@ export async function ensureAnonymousAuth(): Promise<User> {
         }
         if (code === 'auth/api-key-not-valid' || code.includes('api-key-not-valid')) {
           console.error(
-            'Firebase Auth rejected the configured API key (auth/api-key-not-valid). Check VITE_FIREBASE_CONFIG / VITE_FIREBASE_API_KEY and Google Cloud API key HTTP referrer restrictions.'
+            `Firebase Auth rejected the API key for project "${firebaseProjectId ?? 'unknown'}" (source: ${firebaseConfigSource ?? 'unknown'}).`
           );
           throw new Error(
-            'Firebase API key rejected (auth/api-key-not-valid). Verify VITE_FIREBASE_CONFIG / VITE_FIREBASE_API_KEY in Cloudflare and allow your domain in Google Cloud API Key restrictions.'
+            `Firebase API key rejected (auth/api-key-not-valid) for project "${firebaseProjectId ?? 'unknown'}". Check that VITE_FIREBASE_CONFIG matches Firebase Project Settings (delete any stale VITE_FIREBASE_API_KEY), enable Authentication (Identity Toolkit API), and allow your domain in Google Cloud API Key restrictions.`
           );
         }
         throw err;

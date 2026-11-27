@@ -16,6 +16,7 @@ import {
   getDocFromServer,
   getFirestore,
   initializeFirestore,
+  memoryLocalCache,
   persistentLocalCache,
   persistentMultipleTabManager,
   terminate,
@@ -240,6 +241,18 @@ export const firebaseConfigError: string | null = envConfig.error;
 export const firebaseProjectId: string | null = envConfig.config?.projectId ?? null;
 export const firebaseConfigSource: FirebaseConfigSource = envConfig.source;
 
+const CACHE_RECOVERY_KEY = 'mingalar_firestore_cache_recovered';
+const CACHE_MODE_KEY = 'mingalar_firestore_cache_mode';
+
+function shouldUseMemoryCacheFallback(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(CACHE_MODE_KEY) === 'memory';
+  } catch {
+    return false;
+  }
+}
+
 function initFirebaseServices(): {
   app: FirebaseApp | null;
   db: Firestore | null;
@@ -259,14 +272,17 @@ function initFirebaseServices(): {
 
   const firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(envConfig.config);
   const firebaseAuth = getAuth(firebaseApp);
+  const useMemoryCache = shouldUseMemoryCacheFallback();
 
   try {
     const firestoreDb = initializeFirestore(
       firebaseApp,
       {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
-        }),
+        localCache: useMemoryCache
+          ? memoryLocalCache()
+          : persistentLocalCache({
+              tabManager: persistentMultipleTabManager(),
+            }),
       },
       envConfig.databaseId
     );
@@ -274,8 +290,8 @@ function initFirebaseServices(): {
       app: firebaseApp,
       db: firestoreDb,
       auth: firebaseAuth,
-      persistenceEnabled: true,
-      persistenceReason: null,
+      persistenceEnabled: !useMemoryCache,
+      persistenceReason: useMemoryCache ? 'memory-fallback' : null,
     };
   } catch (err) {
     const fallbackDb = envConfig.databaseId
@@ -285,7 +301,7 @@ function initFirebaseServices(): {
       app: firebaseApp,
       db: fallbackDb,
       auth: firebaseAuth,
-      persistenceEnabled: true,
+      persistenceEnabled: !useMemoryCache,
       persistenceReason: err instanceof Error ? err.message : 'already-initialized',
     };
   }
@@ -390,23 +406,104 @@ export const persistencePromise: Promise<{ enabled: boolean; reason: string | nu
     reason: services.persistenceReason,
   });
 
-const CACHE_RECOVERY_KEY = 'mingalar_firestore_cache_recovered';
+let recoveryInProgress = false;
 
-export async function recoverFromTargetIdConflict(errMsg: string): Promise<boolean> {
-  if (!db || !errMsg.includes('Target ID already exists')) return false;
-  if (typeof window === 'undefined') return false;
+export function isFirestoreCacheError(errMsg: string): boolean {
+  const lower = errMsg.toLowerCase();
+  return (
+    lower.includes('target id already exists') ||
+    lower.includes('indexeddbtransactionerror') ||
+    lower.includes('allocate target') ||
+    lower.includes('indexeddb transaction') ||
+    lower.includes('backing store') ||
+    (lower.includes('aborterror') && lower.includes('indexeddb'))
+  );
+}
+
+async function deleteFirestoreIndexedDbDatabases(): Promise<void> {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') return;
   try {
-    if (sessionStorage.getItem(CACHE_RECOVERY_KEY)) return false;
-    sessionStorage.setItem(CACHE_RECOVERY_KEY, '1');
-    await terminate(db);
-    await clearIndexedDbPersistence(db);
+    const dbs = await indexedDB.databases();
+    const targets = dbs
+      .map((entry) => entry.name)
+      .filter((name): name is string => Boolean(name && name.startsWith('firestore/')));
+    await Promise.all(
+      targets.map(
+        (name) =>
+          new Promise<void>((resolve) => {
+            const req = indexedDB.deleteDatabase(name);
+            const timer = setTimeout(resolve, 1500);
+            req.onsuccess = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            req.onerror = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            req.onblocked = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+          })
+      )
+    );
+  } catch {
+    // Ignore unsupported indexedDB.databases() environments
+  }
+}
+
+export async function recoverFromFirestoreCacheError(errMsg: string): Promise<boolean> {
+  if (!db || !isFirestoreCacheError(errMsg)) return false;
+  if (typeof window === 'undefined') return false;
+  if (recoveryInProgress) return true;
+
+  let currentMode: string | null = null;
+  let recoveryStage: string | null = null;
+  try {
+    currentMode = sessionStorage.getItem(CACHE_MODE_KEY);
+    recoveryStage = sessionStorage.getItem(CACHE_RECOVERY_KEY);
+  } catch {
+    return false;
+  }
+
+  // Already running in memory-cache fallback mode; do not reload in a loop
+  if (currentMode === 'memory') return false;
+
+  recoveryInProgress = true;
+  try {
+    if (recoveryStage !== 'cleared') {
+      sessionStorage.setItem(CACHE_RECOVERY_KEY, 'cleared');
+      try {
+        await terminate(db);
+        await clearIndexedDbPersistence(db);
+        await deleteFirestoreIndexedDbDatabases();
+      } catch (clearErr) {
+        console.warn('Firestore IndexedDB clear failed, switching to memory cache:', clearErr);
+        sessionStorage.setItem(CACHE_MODE_KEY, 'memory');
+      }
+      window.location.reload();
+      return true;
+    }
+
+    // Tier 2: clearing IndexedDB once was not enough in this browser/iframe -> fall back to memoryLocalCache
+    sessionStorage.setItem(CACHE_MODE_KEY, 'memory');
+    try {
+      await terminate(db);
+      await deleteFirestoreIndexedDbDatabases();
+    } catch {
+      // Proceed to reload with memoryLocalCache
+    }
     window.location.reload();
     return true;
   } catch (err) {
     console.warn('Firestore cache recovery failed:', err);
+    recoveryInProgress = false;
     return false;
   }
 }
+
+export const recoverFromTargetIdConflict = recoverFromFirestoreCacheError;
 
 // Startup connection validation
 async function testConnection() {

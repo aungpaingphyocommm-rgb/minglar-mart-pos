@@ -78,8 +78,9 @@ import {
   firebaseConfigSource,
   firebaseProjectId,
   isFirebaseConfigured,
+  isFirestoreCacheError,
   persistencePromise,
-  recoverFromTargetIdConflict,
+  recoverFromFirestoreCacheError,
 } from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { UI_TEXT, t } from './i18n/translations';
@@ -257,8 +258,16 @@ export default function App() {
     } catch {
       // Keep raw message
     }
-    if (msg.includes('Target ID already exists')) {
-      void recoverFromTargetIdConflict(msg);
+    if (isFirestoreCacheError(msg)) {
+      void recoverFromFirestoreCacheError(msg).then((recovering) => {
+        if (recovering) {
+          setFirestoreMeta((prev) => ({
+            ...prev,
+            error:
+              'Firestore cache reset in progress. Reconnecting automatically...',
+          }));
+        }
+      });
     }
     setFirestoreMeta((prev) => ({ ...prev, error: msg }));
   }, []);

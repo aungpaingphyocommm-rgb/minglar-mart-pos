@@ -59,6 +59,7 @@ interface SettingsViewProps {
     persistenceEnabled: boolean;
     fromCache: boolean;
     hasPendingWrites: boolean;
+    productsCount: number | null;
     error: string | null;
   };
 }
@@ -573,6 +574,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     Syncs data to Firestore automatically using Anonymous Auth without login
                   </>
                 )}
+              </p>
+              <p className="mt-1.5 font-mono-num text-xs text-[var(--text-secondary)] bg-[var(--bg-surface-muted)] border border-[var(--border-subtle)] rounded-md px-2.5 py-1.5 inline-block">
+                ShopID: {shopId} | Branch: {activeBranch.code} ({activeBranch.id}) | Products in Firestore:{' '}
+                {firestoreMeta.productsCount === null ? '...' : firestoreMeta.productsCount}
               </p>
               {!firebaseConfigured ? (
                 <p className="mt-1 text-xs text-[var(--text-muted)]">

@@ -241,6 +241,7 @@ export async function saveProduct(
       reason: 'Initial SKU entry',
       synced: !isOffline,
       createdAt: nowIso,
+      updatedAt: nowIso,
     };
     tx.objectStore(STORES.MOVEMENTS).put(mov);
   }
@@ -330,6 +331,7 @@ export async function bulkImportProducts(params: {
           reason: 'CSV bulk import',
           synced: !isOffline,
           createdAt: nowIso,
+          updatedAt: nowIso,
         });
       }
     } else {
@@ -372,6 +374,7 @@ export async function bulkImportProducts(params: {
           reason: 'CSV bulk import',
           synced: !isOffline,
           createdAt: nowIso,
+          updatedAt: nowIso,
         });
       }
     }
@@ -433,6 +436,7 @@ export async function adjustStock(params: {
     reason: reason || (type === 'restock' ? 'Restock' : 'Stock adjustment'),
     synced: !isOffline,
     createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
   const tx = db.transaction([STORES.PRODUCTS, STORES.MOVEMENTS], 'readwrite');
@@ -469,8 +473,12 @@ export async function transferProductStock(params: {
   const destNext = destPrev + transferQty;
   const nowIso = new Date().toISOString();
 
+  const transferShopId = product.shopId || fromBranch.shopId || toBranch.shopId || DEFAULT_SHOP_ID;
+
   const updatedProduct: Product = {
     ...product,
+    shopId: transferShopId,
+    branchId: product.branchId || fromBranch.id,
     branchStocks: {
       ...currentMap,
       [fromBranch.id]: sourceNext,
@@ -481,6 +489,7 @@ export async function transferProductStock(params: {
 
   const outMovement: StockMovement = {
     id: `mov-${Date.now()}-out-${Math.random().toString(36).slice(2, 6)}`,
+    shopId: transferShopId,
     productId: product.id,
     sku: product.sku,
     productNameMm: product.nameMm,
@@ -495,10 +504,12 @@ export async function transferProductStock(params: {
     reason: reason || `→ ${toBranch.code} (${toBranch.nameEn})`,
     synced: !isOffline,
     createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
   const inMovement: StockMovement = {
     id: `mov-${Date.now()}-in-${Math.random().toString(36).slice(2, 6)}`,
+    shopId: transferShopId,
     productId: product.id,
     sku: product.sku,
     productNameMm: product.nameMm,
@@ -513,6 +524,7 @@ export async function transferProductStock(params: {
     reason: reason || `← ${fromBranch.code} (${fromBranch.nameEn})`,
     synced: !isOffline,
     createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
   const tx = db.transaction([STORES.PRODUCTS, STORES.MOVEMENTS], 'readwrite');
@@ -627,6 +639,7 @@ export async function completeSale(params: {
         reason: invoiceNo,
         synced: !isOffline,
         createdAt: nowIso,
+        updatedAt: nowIso,
       };
       movStore.put(mov);
     }
@@ -699,14 +712,19 @@ export async function reverseSale(params: {
 
   let createdReversalRecord: Sale | null = null;
 
+  const targetShopId = target.shopId || targetBranch?.shopId || DEFAULT_SHOP_ID;
+
   if (isFullReversal) {
     const updatedTarget: Sale = {
       ...target,
+      shopId: targetShopId,
+      branchId: target.branchId || targetBranch?.id,
       status: 'voided',
       reversalReason: reason,
       reversedAt: nowIso,
       reversedItems: nextReversedMap,
       synced: !isOffline,
+      updatedAt: nowIso,
     };
     salesStore.put(updatedTarget);
     createdReversalRecord = updatedTarget;
@@ -734,15 +752,19 @@ export async function reverseSale(params: {
 
     salesStore.put({
       ...target,
+      shopId: targetShopId,
+      branchId: target.branchId || targetBranch?.id,
       status: 'completed',
       reversedItems: nextReversedMap,
       reversalReason: reason,
       reversedAt: nowIso,
       synced: !isOffline,
+      updatedAt: nowIso,
     });
 
     const reversalSale: Sale = {
       id: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      shopId: targetShopId,
       invoiceNo: revInvoiceNo,
       branchId: targetBranch?.id ?? target.branchId,
       branchNameMm: targetBranch?.nameMm ?? target.branchNameMm,
@@ -765,6 +787,7 @@ export async function reverseSale(params: {
       reversalReason: reason,
       note: reason,
       createdAt: nowIso,
+      updatedAt: nowIso,
     };
     salesStore.put(reversalSale);
     createdReversalRecord = reversalSale;
@@ -777,14 +800,18 @@ export async function reverseSale(params: {
         const map = prod.branchStocks ?? { [targetBranch.id]: prod.stock };
         const prev = map[targetBranch.id] ?? 0;
         const next = prev + qty;
+        const prodShopId = prod.shopId || targetShopId;
         prodStore.put({
           ...prod,
+          shopId: prodShopId,
+          branchId: prod.branchId || targetBranch.id,
           stock: next,
           branchStocks: { ...map, [targetBranch.id]: next },
           updatedAt: nowIso,
         });
         movStore.put({
           id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          shopId: prodShopId,
           productId: prod.id,
           sku: prod.sku,
           productNameMm: prod.nameMm,
@@ -799,6 +826,7 @@ export async function reverseSale(params: {
           reason: `Reversal ${target.invoiceNo}${reason ? ` · ${reason}` : ''}`,
           synced: !isOffline,
           createdAt: nowIso,
+          updatedAt: nowIso,
         });
       }
     }

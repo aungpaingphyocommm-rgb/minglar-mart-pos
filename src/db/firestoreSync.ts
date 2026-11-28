@@ -1,9 +1,13 @@
 import {
+  DocumentData,
+  DocumentReference,
   Timestamp,
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   query,
   serverTimestamp,
@@ -12,6 +16,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
+import { SEED_MOVEMENTS, SEED_PRODUCTS, SEED_SALES } from '../data/seedData';
 import { DEFAULT_SHOP_ID, OperationType, db, handleFirestoreError } from '../firebase';
 import { Branch, Product, Sale, StockMovement, StoreSettings } from '../types/pos';
 import { FullStoreSnapshot } from './offlineDb';
@@ -23,6 +28,10 @@ export interface FirestoreSyncMetadata {
   productsLoaded: boolean;
   salesLoaded: boolean;
 }
+
+const SEED_PRODUCT_ID_SET = new Set(SEED_PRODUCTS.map((p) => p.id));
+const SEED_SALE_ID_SET = new Set(SEED_SALES.map((s) => s.id));
+const SEED_MOVEMENT_ID_SET = new Set(SEED_MOVEMENTS.map((m) => m.id));
 
 const knownIds = {
   branches: new Set<string>(),
@@ -183,6 +192,7 @@ function buildMovementCreatePayload(
   mov: StockMovement,
   fallbackBranchId = 'branch-1'
 ) {
+  const created = clampStr(mov.createdAt || new Date().toISOString(), 64);
   return stripUndefined({
     id: clampStr(mov.id, 128),
     shopId: clampStr(shopId || DEFAULT_SHOP_ID, 128),
@@ -199,7 +209,8 @@ function buildMovementCreatePayload(
     newStock: Math.max(0, Number(mov.newStock) || 0),
     reason: clampStr(mov.reason, 300),
     synced: Boolean(mov.synced),
-    createdAt: clampStr(mov.createdAt || new Date().toISOString(), 64),
+    createdAt: created,
+    updatedAt: clampStr(mov.updatedAt || created, 64),
     serverCreatedAt: serverTimestamp(),
   });
 }
@@ -272,13 +283,21 @@ export function subscribeToStoreCollections(params: {
   ) => void;
   onProducts: (
     products: Product[],
-    meta: { fromCache: boolean; hasPendingWrites: boolean; cloudHasData: boolean }
+    meta: {
+      fromCache: boolean;
+      hasPendingWrites: boolean;
+      cloudHasData: boolean;
+      productsCount: number;
+    }
   ) => void;
   onSales: (
     sales: Sale[],
     meta: { fromCache: boolean; hasPendingWrites: boolean; cloudHasData: boolean }
   ) => void;
-  onMovements: (movements: StockMovement[], meta: { cloudHasData: boolean }) => void;
+  onMovements: (
+    movements: StockMovement[],
+    meta: { fromCache: boolean; cloudHasData: boolean }
+  ) => void;
   onSettings: (settings: StoreSettings | null) => void;
   onInitialEmptyCloud?: () => void;
   onError: (err: Error) => void;
@@ -385,6 +404,7 @@ export function subscribeToStoreCollections(params: {
         fromCache: snap.metadata.fromCache,
         hasPendingWrites: snap.metadata.hasPendingWrites,
         cloudHasData,
+        productsCount: snap.size,
       });
     },
     (error) => {
@@ -447,7 +467,7 @@ export function subscribeToStoreCollections(params: {
       const list = snap.docs
         .map((d) => cleanFirestoreDoc<StockMovement>(d.data({ serverTimestamps: 'estimate' })))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      onMovements(list, { cloudHasData });
+      onMovements(list, { fromCache: snap.metadata.fromCache, cloudHasData });
     },
     (error) => {
       if (unsubscribed) return;
@@ -705,6 +725,361 @@ export async function pushSnapshotToFirestoreAsync(
   }
 }
 
+function isNotFoundFirestoreError(err: unknown): boolean {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: string }).code)
+      : '';
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return code === 'not-found' || msg.includes('no document to update');
+}
+
+function isPermissionDeniedError(err: unknown): boolean {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: string }).code)
+      : '';
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return code === 'permission-denied' || msg.includes('missing or insufficient permissions');
+}
+
+async function upsertDocResilient(params: {
+  ref: DocumentReference<DocumentData>;
+  knownSet: Set<string>;
+  docId: string;
+  createPayload: Record<string, unknown>;
+  updatePayload: Record<string, unknown>;
+  path: string;
+  onError?: (err: Error) => void;
+}): Promise<void> {
+  const { ref, knownSet, docId, createPayload, updatePayload, path, onError } = params;
+  if (knownSet.has(docId)) {
+    try {
+      await updateDoc(ref, updatePayload);
+      return;
+    } catch (err) {
+      if (isNotFoundFirestoreError(err)) {
+        knownSet.delete(docId);
+        try {
+          await setDoc(ref, createPayload);
+          knownSet.add(docId);
+          return;
+        } catch (retryErr) {
+          reportWriteError(retryErr, OperationType.CREATE, path, onError);
+          return;
+        }
+      }
+      reportWriteError(err, OperationType.UPDATE, path, onError);
+      return;
+    }
+  }
+
+  try {
+    await setDoc(ref, createPayload);
+    knownSet.add(docId);
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      try {
+        const existingSnap = await getDoc(ref);
+        if (existingSnap.exists()) {
+          knownSet.add(docId);
+          await updateDoc(ref, updatePayload);
+          return;
+        }
+      } catch (retryErr) {
+        reportWriteError(retryErr, OperationType.UPDATE, path, onError);
+        return;
+      }
+    }
+    reportWriteError(err, OperationType.CREATE, path, onError);
+  }
+}
+
+function buildSaleUpdatePayload(sale: Sale) {
+  return stripUndefined({
+    status: sale.status,
+    reversedItems: sale.reversedItems ?? undefined,
+    reversalReason: sale.reversalReason ? clampStr(sale.reversalReason, 300) : undefined,
+    reversedAt: sale.reversedAt ? clampStr(sale.reversedAt, 64) : undefined,
+    synced: true,
+    updatedAt: clampStr(sale.updatedAt || new Date().toISOString(), 64),
+    serverUpdatedAt: serverTimestamp(),
+  });
+}
+
+async function fetchCollectionPreferServer<T>(
+  q: ReturnType<typeof query>,
+  isOffline: boolean
+): Promise<{ docs: Array<{ id: string; data: T }> }> {
+  const snap = isOffline
+    ? await getDocs(q)
+    : await getDocsFromServer(q).catch(() => getDocs(q));
+  return {
+    docs: snap.docs.map((d) => ({
+      id: d.id,
+      data: cleanFirestoreDoc<T>(d.data({ serverTimestamps: 'estimate' }) as Record<string, unknown>),
+    })),
+  };
+}
+
+export interface ReconciledFirestoreResult {
+  branches: Branch[];
+  products: Product[];
+  sales: Sale[];
+  movements: StockMovement[];
+  settings: StoreSettings | null;
+  productsCount: number;
+}
+
+export async function reconcileAndSyncFirestore(params: {
+  shopId: string;
+  branchId: string;
+  localSnapshot: FullStoreSnapshot;
+  isOffline?: boolean;
+  onError?: (err: Error) => void;
+}): Promise<ReconciledFirestoreResult> {
+  if (!db) {
+    throw new Error('Firebase is not configured (missing VITE_FIREBASE_CONFIG).');
+  }
+  const firestore = db;
+  const effectiveShopId = params.shopId || DEFAULT_SHOP_ID;
+  const { branchId, localSnapshot, isOffline = false, onError } = params;
+  const mainBranchId =
+    localSnapshot.branches.find((b) => b.isMain)?.id ??
+    localSnapshot.branches[0]?.id ??
+    branchId;
+
+  try {
+    const [bRes, pRes, sRes, mRes, stRes] = await Promise.all([
+      fetchCollectionPreferServer<Branch>(
+        query(collection(firestore, 'branches'), where('shopId', '==', effectiveShopId)),
+        isOffline
+      ),
+      fetchCollectionPreferServer<Product>(
+        query(
+          collection(firestore, 'products'),
+          where('shopId', '==', effectiveShopId),
+          where('branchId', '==', branchId)
+        ),
+        isOffline
+      ),
+      fetchCollectionPreferServer<Sale>(
+        query(
+          collection(firestore, 'sales'),
+          where('shopId', '==', effectiveShopId),
+          where('branchId', '==', branchId)
+        ),
+        isOffline
+      ),
+      fetchCollectionPreferServer<StockMovement>(
+        query(
+          collection(firestore, 'movements'),
+          where('shopId', '==', effectiveShopId),
+          where('branchId', '==', branchId)
+        ),
+        isOffline
+      ),
+      fetchCollectionPreferServer<StoreSettings>(
+        query(collection(firestore, 'settings'), where('shopId', '==', effectiveShopId)),
+        isOffline
+      ),
+    ]);
+
+    knownIds.branches = new Set(bRes.docs.map((d) => d.id));
+    knownIds.products = new Set(pRes.docs.map((d) => d.id));
+    knownIds.sales = new Set(sRes.docs.map((d) => d.id));
+    knownIds.movements = new Set(mRes.docs.map((d) => d.id));
+    knownIds.settings = new Set(stRes.docs.map((d) => d.id));
+
+    const remoteBranchMap = new Map(bRes.docs.map((d) => [d.data.id, d.data]));
+    const remoteProdMap = new Map(pRes.docs.map((d) => [d.data.id, d.data]));
+    const remoteSaleMap = new Map(sRes.docs.map((d) => [d.data.id, d.data]));
+    const remoteMovMap = new Map(mRes.docs.map((d) => [d.data.id, d.data]));
+    const remoteSettings = stRes.docs[0]?.data ?? null;
+
+    const headerBatch = writeBatch(firestore);
+    let headerOps = 0;
+    const mergedBranches = new Map<string, Branch>(remoteBranchMap);
+
+    for (const branch of localSnapshot.branches) {
+      const normalizedBranch: Branch = {
+        ...branch,
+        shopId: effectiveShopId,
+        updatedAt: branch.updatedAt || branch.createdAt || new Date().toISOString(),
+      };
+      const docId = toFirestoreDocId(effectiveShopId, normalizedBranch.id);
+      const ref = doc(firestore, 'branches', docId);
+      const remote = remoteBranchMap.get(normalizedBranch.id);
+
+      if (!remote) {
+        if (bRes.docs.length === 0 || !normalizedBranch.isMain) {
+          headerBatch.set(ref, buildBranchCreatePayload(effectiveShopId, normalizedBranch));
+          knownIds.branches.add(docId);
+          mergedBranches.set(normalizedBranch.id, normalizedBranch);
+          headerOps++;
+        }
+      } else if ((normalizedBranch.updatedAt ?? '') > (remote.updatedAt ?? '')) {
+        headerBatch.update(ref, buildBranchUpdatePayload(normalizedBranch));
+        mergedBranches.set(normalizedBranch.id, normalizedBranch);
+        headerOps++;
+      }
+    }
+
+    const settingsDocId = toFirestoreDocId(
+      effectiveShopId,
+      localSnapshot.settings.id || 'default'
+    );
+    const settingsRef = doc(firestore, 'settings', settingsDocId);
+    const syncedAtIso = new Date().toISOString();
+    const baseSettings: StoreSettings = {
+      ...(remoteSettings ?? localSnapshot.settings),
+      ...localSnapshot.settings,
+      shopId: effectiveShopId,
+      lastSyncedAt: syncedAtIso,
+      updatedAt: syncedAtIso,
+    };
+
+    if (!remoteSettings) {
+      headerBatch.set(settingsRef, buildSettingsCreatePayload(effectiveShopId, baseSettings));
+      knownIds.settings.add(settingsDocId);
+      headerOps++;
+    } else if ((localSnapshot.settings.updatedAt ?? '') >= (remoteSettings.updatedAt ?? '')) {
+      headerBatch.update(settingsRef, buildSettingsUpdatePayload(baseSettings));
+      headerOps++;
+    }
+
+    if (headerOps > 0) {
+      await headerBatch.commit();
+    }
+
+    const ops: Array<(b: ReturnType<typeof writeBatch>) => void> = [];
+    const mergedProducts = new Map<string, Product>(remoteProdMap);
+    const cloudHasProducts = pRes.docs.length > 0;
+
+    const branchScopedProducts = localSnapshot.products.filter(
+      (p) => (p.branchId || mainBranchId) === branchId
+    );
+    for (const product of branchScopedProducts) {
+      const normalizedProd: Product = {
+        ...product,
+        shopId: effectiveShopId,
+        branchId,
+        updatedAt: product.updatedAt || new Date().toISOString(),
+      };
+      const docId = toFirestoreDocId(effectiveShopId, normalizedProd.id);
+      const ref = doc(firestore, 'products', docId);
+      const remote = remoteProdMap.get(normalizedProd.id);
+
+      if (!remote) {
+        // Avoid resurrecting default sample rows if another device already cleared/customized this branch in Firestore
+        const isUneditedSeed = SEED_PRODUCT_ID_SET.has(normalizedProd.id);
+        if (!cloudHasProducts || !isUneditedSeed) {
+          knownIds.products.add(docId);
+          ops.push((b) =>
+            b.set(ref, buildProductCreatePayload(effectiveShopId, normalizedProd, branchId))
+          );
+          mergedProducts.set(normalizedProd.id, normalizedProd);
+        }
+      } else if ((normalizedProd.updatedAt ?? '') > (remote.updatedAt ?? '')) {
+        ops.push((b) => b.update(ref, buildProductUpdatePayload(normalizedProd)));
+        mergedProducts.set(normalizedProd.id, normalizedProd);
+      }
+    }
+
+    const mergedSales = new Map<string, Sale>(remoteSaleMap);
+    const cloudHasSales = sRes.docs.length > 0;
+    const branchScopedSales = localSnapshot.sales.filter(
+      (s) => (s.branchId || mainBranchId) === branchId
+    );
+    for (const sale of branchScopedSales) {
+      const normalizedSale: Sale = {
+        ...sale,
+        shopId: effectiveShopId,
+        branchId,
+        synced: true,
+        updatedAt: sale.updatedAt || sale.createdAt || new Date().toISOString(),
+      };
+      const docId = toFirestoreDocId(effectiveShopId, normalizedSale.id);
+      const ref = doc(firestore, 'sales', docId);
+      const remote = remoteSaleMap.get(normalizedSale.id);
+
+      if (!remote) {
+        if (!cloudHasSales || !SEED_SALE_ID_SET.has(normalizedSale.id) || !sale.synced) {
+          knownIds.sales.add(docId);
+          ops.push((b) =>
+            b.set(ref, buildSaleCreatePayload(effectiveShopId, normalizedSale, branchId))
+          );
+          mergedSales.set(normalizedSale.id, normalizedSale);
+        }
+      } else if (
+        remote.status !== 'voided' &&
+        (normalizedSale.updatedAt ?? '') > (remote.updatedAt ?? remote.createdAt ?? '')
+      ) {
+        ops.push((b) => b.update(ref, buildSaleUpdatePayload(normalizedSale)));
+        mergedSales.set(normalizedSale.id, normalizedSale);
+      }
+    }
+
+    const mergedMovements = new Map<string, StockMovement>(remoteMovMap);
+    const cloudHasMovements = mRes.docs.length > 0;
+    const branchScopedMovements = localSnapshot.movements.filter(
+      (m) => (m.branchId || mainBranchId) === branchId
+    );
+    for (const mov of branchScopedMovements) {
+      const docId = toFirestoreDocId(effectiveShopId, mov.id);
+      const normalizedMov: StockMovement = {
+        ...mov,
+        shopId: effectiveShopId,
+        branchId,
+        synced: true,
+        updatedAt: mov.updatedAt || mov.createdAt || new Date().toISOString(),
+      };
+      if (!remoteMovMap.has(mov.id)) {
+        if (!cloudHasMovements || !SEED_MOVEMENT_ID_SET.has(mov.id) || !mov.synced) {
+          knownIds.movements.add(docId);
+          const ref = doc(firestore, 'movements', docId);
+          ops.push((b) =>
+            b.set(ref, buildMovementCreatePayload(effectiveShopId, normalizedMov, branchId))
+          );
+          mergedMovements.set(mov.id, normalizedMov);
+        }
+      }
+    }
+
+    for (let i = 0; i < ops.length; i += 400) {
+      const chunk = ops.slice(i, i + 400);
+      const b = writeBatch(firestore);
+      chunk.forEach((apply) => apply(b));
+      await b.commit();
+    }
+
+    const finalBranches = Array.from(mergedBranches.values()).sort((a, b) =>
+      a.isMain === b.isMain ? a.code.localeCompare(b.code) : a.isMain ? -1 : 1
+    );
+    const finalProducts = Array.from(mergedProducts.values()).sort((a, b) =>
+      a.nameEn.localeCompare(b.nameEn)
+    );
+    const finalSales = Array.from(mergedSales.values()).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    );
+    const finalMovements = Array.from(mergedMovements.values()).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    );
+
+    return {
+      branches: finalBranches,
+      products: finalProducts,
+      sales: finalSales,
+      movements: finalMovements,
+      settings: remoteSettings ?? baseSettings,
+      productsCount: finalProducts.length,
+    };
+  } catch (err) {
+    reportWriteError(err, OperationType.WRITE, 'reconcile', onError);
+    throw err;
+  }
+}
+
 export function pushSnapshotToFirestore(
   shopId: string,
   branchId: string,
@@ -724,16 +1099,15 @@ export function syncBranchToFirestore(
   const effectiveShopId = shopId || DEFAULT_SHOP_ID;
   const docId = toFirestoreDocId(effectiveShopId, branch.id);
   const ref = doc(db, 'branches', docId);
-  if (knownIds.branches.has(docId)) {
-    void updateDoc(ref, buildBranchUpdatePayload(branch)).catch((err) =>
-      reportWriteError(err, OperationType.UPDATE, `branches/${docId}`, onError)
-    );
-  } else {
-    knownIds.branches.add(docId);
-    void setDoc(ref, buildBranchCreatePayload(effectiveShopId, branch)).catch((err) =>
-      reportWriteError(err, OperationType.CREATE, `branches/${docId}`, onError)
-    );
-  }
+  void upsertDocResilient({
+    ref,
+    knownSet: knownIds.branches,
+    docId,
+    createPayload: buildBranchCreatePayload(effectiveShopId, branch),
+    updatePayload: buildBranchUpdatePayload(branch),
+    path: `branches/${docId}`,
+    onError,
+  });
 }
 
 export function deleteBranchFromFirestore(
@@ -759,17 +1133,15 @@ export function syncProductToFirestore(
   const effectiveShopId = shopId || DEFAULT_SHOP_ID;
   const docId = toFirestoreDocId(effectiveShopId, product.id);
   const ref = doc(db, 'products', docId);
-  if (knownIds.products.has(docId)) {
-    void updateDoc(ref, buildProductUpdatePayload(product)).catch((err) =>
-      reportWriteError(err, OperationType.UPDATE, `products/${docId}`, onError)
-    );
-  } else {
-    knownIds.products.add(docId);
-    void setDoc(
-      ref,
-      buildProductCreatePayload(effectiveShopId, product, product.branchId || 'branch-1')
-    ).catch((err) => reportWriteError(err, OperationType.CREATE, `products/${docId}`, onError));
-  }
+  void upsertDocResilient({
+    ref,
+    knownSet: knownIds.products,
+    docId,
+    createPayload: buildProductCreatePayload(effectiveShopId, product, product.branchId || 'branch-1'),
+    updatePayload: buildProductUpdatePayload(product),
+    path: `products/${docId}`,
+    onError,
+  });
 }
 
 export function deleteProductFromFirestore(
@@ -795,30 +1167,25 @@ export function syncSaleToFirestore(
   const effectiveShopId = shopId || DEFAULT_SHOP_ID;
   const docId = toFirestoreDocId(effectiveShopId, sale.id);
   const ref = doc(db, 'sales', docId);
-  if (knownIds.sales.has(docId)) {
-    void updateDoc(
-      ref,
-      stripUndefined({
-        status: sale.status,
-        reversedItems: sale.reversedItems ?? undefined,
-        reversalReason: sale.reversalReason ? clampStr(sale.reversalReason, 300) : undefined,
-        reversedAt: sale.reversedAt ? clampStr(sale.reversedAt, 64) : undefined,
-        synced: true,
-        updatedAt: clampStr(sale.updatedAt || new Date().toISOString(), 64),
-        serverUpdatedAt: serverTimestamp(),
-      })
-    ).catch((err) => reportWriteError(err, OperationType.UPDATE, `sales/${docId}`, onError));
-  } else {
-    knownIds.sales.add(docId);
-    void setDoc(
-      ref,
-      buildSaleCreatePayload(
-        effectiveShopId,
-        { ...sale, synced: true, updatedAt: sale.updatedAt || new Date().toISOString() },
-        sale.branchId || 'branch-1'
-      )
-    ).catch((err) => reportWriteError(err, OperationType.CREATE, `sales/${docId}`, onError));
-  }
+  const normalizedSale: Sale = {
+    ...sale,
+    shopId: effectiveShopId,
+    synced: true,
+    updatedAt: sale.updatedAt || sale.createdAt || new Date().toISOString(),
+  };
+  void upsertDocResilient({
+    ref,
+    knownSet: knownIds.sales,
+    docId,
+    createPayload: buildSaleCreatePayload(
+      effectiveShopId,
+      normalizedSale,
+      sale.branchId || 'branch-1'
+    ),
+    updatePayload: buildSaleUpdatePayload(normalizedSale),
+    path: `sales/${docId}`,
+    onError,
+  });
 }
 
 export function syncMovementToFirestore(
@@ -851,16 +1218,15 @@ export function syncSettingsToFirestore(
   const effectiveShopId = shopId || DEFAULT_SHOP_ID;
   const docId = toFirestoreDocId(effectiveShopId, settings.id || 'default');
   const ref = doc(db, 'settings', docId);
-  if (knownIds.settings.has(docId)) {
-    void updateDoc(ref, buildSettingsUpdatePayload(settings)).catch((err) =>
-      reportWriteError(err, OperationType.UPDATE, `settings/${docId}`, onError)
-    );
-  } else {
-    knownIds.settings.add(docId);
-    void setDoc(ref, buildSettingsCreatePayload(effectiveShopId, settings)).catch((err) =>
-      reportWriteError(err, OperationType.CREATE, `settings/${docId}`, onError)
-    );
-  }
+  void upsertDocResilient({
+    ref,
+    knownSet: knownIds.settings,
+    docId,
+    createPayload: buildSettingsCreatePayload(effectiveShopId, settings),
+    updatePayload: buildSettingsUpdatePayload(settings),
+    path: `settings/${docId}`,
+    onError,
+  });
 }
 
 export function deleteIdsFromFirestore(

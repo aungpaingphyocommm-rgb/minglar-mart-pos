@@ -39,16 +39,11 @@ service cloud.firestore {
 
     // Anonymous Auth is used strictly for authentication; shop isolation uses shared shopId
     function isShopAccess(data) {
-      return isSignedIn() && isValidId(data.shopId);
+      return isSignedIn() && (data.shopId == 'mingalar-mart-pos-main' || isValidId(data.shopId));
     }
 
     function isOptionalString(data, key, maxLen) {
       return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
-    }
-
-    function branchDocExistsForShop(shopId, branchId) {
-      return exists(/databases/$(database)/documents/branches/$(shopId + '_' + branchId))
-        || existsAfter(/databases/$(database)/documents/branches/$(shopId + '_' + branchId));
     }
 
     // Entity Validation Blueprints
@@ -167,7 +162,7 @@ service cloud.firestore {
         'id', 'shopId', 'productId', 'sku', 'productNameMm', 'productNameEn',
         'branchId', 'branchNameMm', 'branchNameEn',
         'type', 'delta', 'previousStock', 'newStock', 'reason', 'synced',
-        'createdAt', 'serverCreatedAt'
+        'createdAt', 'updatedAt', 'serverCreatedAt'
       ])
       && isValidId(data.id)
       && isValidId(data.shopId)
@@ -185,6 +180,7 @@ service cloud.firestore {
       && data.reason is string && data.reason.size() <= 300
       && data.synced is bool
       && data.createdAt is string && data.createdAt.size() <= 64
+      && isOptionalString(data, 'updatedAt', 64)
       && data.serverCreatedAt is timestamp;
     }
 
@@ -229,7 +225,7 @@ service cloud.firestore {
     // Branches Collection (Shared Shop Real-Time Sync across devices)
     match /branches/{branchId} {
       allow get: if isValidId(branchId) && (isShopAccess(existing()) || isAdmin());
-      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
+      allow list: if isShopAccess(existing()) || isBootstrappedAdmin();
       allow create: if isSignedIn()
         && isValidId(branchId)
         && isValidBranch(incoming(), branchId)
@@ -258,7 +254,7 @@ service cloud.firestore {
     // Products Collection (Shared Shop + Branch Real-Time Sync)
     match /products/{productId} {
       allow get: if isValidId(productId) && (isShopAccess(existing()) || isAdmin());
-      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
+      allow list: if isShopAccess(existing()) || isBootstrappedAdmin();
       allow create: if isSignedIn()
         && isValidId(productId)
         && isValidProduct(incoming(), productId)
@@ -292,13 +288,12 @@ service cloud.firestore {
     // Sales Collection (Shared Shop + Branch Real-Time Sync + Terminal State Locking)
     match /sales/{saleId} {
       allow get: if isValidId(saleId) && (isShopAccess(existing()) || isAdmin());
-      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
+      allow list: if isShopAccess(existing()) || isBootstrappedAdmin();
       allow create: if isSignedIn()
         && isValidId(saleId)
         && isValidSale(incoming(), saleId)
         && incoming().serverCreatedAt == request.time
-        && incoming().serverUpdatedAt == request.time
-        && branchDocExistsForShop(incoming().shopId, incoming().branchId);
+        && incoming().serverUpdatedAt == request.time;
       allow update: if isSignedIn()
         && isValidId(saleId)
         && isValidSale(incoming(), saleId)
@@ -328,7 +323,7 @@ service cloud.firestore {
     // Stock Movements Collection (Shared Shop + Branch Audit Ledger)
     match /movements/{movementId} {
       allow get: if isValidId(movementId) && (isShopAccess(existing()) || isAdmin());
-      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
+      allow list: if isShopAccess(existing()) || isBootstrappedAdmin();
       allow create: if isSignedIn()
         && isValidId(movementId)
         && isValidMovement(incoming(), movementId)
@@ -340,7 +335,7 @@ service cloud.firestore {
     // Store Settings Collection (Shared Shop Settings)
     match /settings/{settingsId} {
       allow get: if isValidId(settingsId) && (isShopAccess(existing()) || isAdmin());
-      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
+      allow list: if isShopAccess(existing()) || isBootstrappedAdmin();
       allow create: if isSignedIn()
         && isValidId(settingsId)
         && isValidSettings(incoming(), settingsId)

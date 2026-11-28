@@ -28,11 +28,7 @@ interface EnvFirebaseConfig extends FirebaseOptions {
 
 export const DEFAULT_SHOP_ID = 'mingalar-mart-pos-main';
 
-export function resolveShopId(settingsShopId?: string | null): string {
-  const cleanedSettings = settingsShopId?.trim();
-  if (cleanedSettings && /^[a-zA-Z0-9_-]{1,128}$/.test(cleanedSettings)) {
-    return cleanedSettings;
-  }
+export function resolveShopId(_settingsShopId?: string | null): string {
   const envShop = sanitizeEnvValue(import.meta.env.VITE_FIREBASE_SHOP_ID);
   if (envShop && /^[a-zA-Z0-9_-]{1,128}$/.test(envShop)) {
     return envShop;

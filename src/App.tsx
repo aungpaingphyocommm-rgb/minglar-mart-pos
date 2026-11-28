@@ -41,7 +41,7 @@ import {
   deleteIdsFromFirestore,
   deleteProductFromFirestore,
   pushSnapshotToFirestore,
-  pushSnapshotToFirestoreAsync,
+  reconcileAndSyncFirestore,
   resetKnownFirestoreIds,
   subscribeToStoreCollections,
   syncBranchToFirestore,
@@ -145,6 +145,7 @@ export default function App() {
     persistenceEnabled: false,
     fromCache: false,
     hasPendingWrites: false,
+    productsCount: null as number | null,
     error: null as string | null,
   });
 
@@ -210,6 +211,7 @@ export default function App() {
             active: false,
             fromCache: false,
             hasPendingWrites: false,
+            productsCount: null,
             error: null,
           }));
           if (navigator.onLine) {
@@ -300,7 +302,12 @@ export default function App() {
     }
 
     let cloudInitialized = false;
-    setFirestoreMeta((prev) => ({ ...prev, active: true, error: null }));
+    setFirestoreMeta((prev) => ({
+      ...prev,
+      active: true,
+      productsCount: null,
+      error: null,
+    }));
 
     const unsubscribe = subscribeToStoreCollections({
       shopId: activeShopId,
@@ -326,8 +333,12 @@ export default function App() {
           active: true,
           fromCache: meta.fromCache,
           hasPendingWrites: meta.hasPendingWrites,
+          productsCount: meta.productsCount,
         }));
-        if (meta.cloudHasData || remoteProducts.length > 0 || cloudInitialized) {
+        if (
+          (!meta.fromCache || remoteProducts.length > 0 || cloudInitialized) &&
+          (meta.cloudHasData || remoteProducts.length > 0 || cloudInitialized)
+        ) {
           cloudInitialized = true;
           void replaceLocalStoreForBranch(
             'products',
@@ -346,7 +357,10 @@ export default function App() {
           fromCache: meta.fromCache,
           hasPendingWrites: meta.hasPendingWrites,
         }));
-        if (meta.cloudHasData || remoteSales.length > 0 || cloudInitialized) {
+        if (
+          (!meta.fromCache || remoteSales.length > 0 || cloudInitialized) &&
+          (meta.cloudHasData || remoteSales.length > 0 || cloudInitialized)
+        ) {
           void replaceLocalStoreForBranch(
             'sales',
             selectedBranchId,
@@ -358,7 +372,10 @@ export default function App() {
         }
       },
       onMovements: (remoteMovements, meta) => {
-        if (meta.cloudHasData || remoteMovements.length > 0 || cloudInitialized) {
+        if (
+          (!meta.fromCache || remoteMovements.length > 0 || cloudInitialized) &&
+          (meta.cloudHasData || remoteMovements.length > 0 || cloudInitialized)
+        ) {
           void replaceLocalStoreForBranch(
             'movements',
             selectedBranchId,
@@ -698,34 +715,75 @@ export default function App() {
       throw new Error(firebaseConfigError ?? 'VITE_FIREBASE_CONFIG missing or invalid JSON');
     }
 
+    if (isOffline) {
+      throw new Error(
+        lang === 'mm'
+          ? 'Firestore သို့ Sync လုပ်ရန် အင်တာနက် ချိတ်ဆက်ပေးပါ'
+          : 'Connect to the internet to sync with Firestore'
+      );
+    }
+
     if (!isCloudSignedIn) {
-      if (isOffline) {
-        throw new Error(
-          lang === 'mm'
-            ? 'Firestore သို့ Sync လုပ်ရန် အင်တာနက် ချိတ်ဆက်ပေးပါ'
-            : 'Connect to the internet to initialize Anonymous Cloud Sync'
-        );
-      }
       await ensureAnonymousAuth();
     }
 
     await syncPendingRecords();
     const snap = await reloadSnapshot();
-    await pushSnapshotToFirestoreAsync(
-      activeShopId,
+    const reconciled = await reconcileAndSyncFirestore({
+      shopId: activeShopId,
+      branchId: selectedBranchId,
+      localSnapshot: snap,
+      isOffline: false,
+      onError: handleFirestoreSyncError,
+    });
+
+    if (reconciled.branches.length > 0) {
+      await replaceLocalStore('branches', reconciled.branches);
+      setBranches(reconciled.branches);
+    }
+
+    const mergedProducts = await replaceLocalStoreForBranch(
+      'products',
       selectedBranchId,
-      snap,
-      isOffline,
-      handleFirestoreSyncError
+      mainBranch.id,
+      reconciled.products
     );
+    setProducts(mergedProducts.sort((a, b) => a.nameEn.localeCompare(b.nameEn)));
+
+    const mergedSales = await replaceLocalStoreForBranch(
+      'sales',
+      selectedBranchId,
+      mainBranch.id,
+      reconciled.sales
+    );
+    setSales(mergedSales.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+
+    const mergedMovements = await replaceLocalStoreForBranch(
+      'movements',
+      selectedBranchId,
+      mainBranch.id,
+      reconciled.movements
+    );
+    setMovements(mergedMovements.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+
     const syncedSettings: StoreSettings = {
       ...snap.settings,
+      ...(reconciled.settings ?? {}),
       shopId: activeShopId,
+      activeBranchId: selectedBranchId,
+      theme: snap.settings.theme,
       lastSyncedAt: new Date().toISOString(),
     };
     await saveSettings(syncedSettings);
     setSettings(syncedSettings);
-    setFirestoreMeta((prev) => ({ ...prev, error: null }));
+    setFirestoreMeta((prev) => ({
+      ...prev,
+      active: true,
+      fromCache: false,
+      hasPendingWrites: false,
+      productsCount: reconciled.productsCount,
+      error: null,
+    }));
   };
 
   const handleRestoreBackup = async (snap: FullStoreSnapshot) => {

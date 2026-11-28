@@ -122,6 +122,7 @@ export interface StockMovement {
   reason: string;
   synced: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export type ThemeMode = 'light' | 'dark';

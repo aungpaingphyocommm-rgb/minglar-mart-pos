@@ -372,6 +372,10 @@
           "type": "string",
           "maxLength": 64
         },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
         "serverCreatedAt": {
           "type": "string",
           "format": "date-time"

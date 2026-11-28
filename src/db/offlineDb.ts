@@ -5,6 +5,7 @@ import {
   SEED_PRODUCTS,
   SEED_SALES,
 } from '../data/seedData';
+import { DEFAULT_SHOP_ID, resolveShopId } from '../firebase';
 import {
   Branch,
   CartItem,
@@ -126,10 +127,14 @@ export async function initAndLoadSnapshot(): Promise<FullStoreSnapshot> {
     };
   }
 
-  // Upgrade / migrate legacy records without branches
+  // Upgrade / migrate legacy records without branches, shopId, or product branchId
   let branches = branchList;
-  const settings = { ...DEFAULT_SETTINGS, ...(settingsList[0] ?? {}) };
-  let needsMigrationWrite = false;
+  const settings: StoreSettings = {
+    ...DEFAULT_SETTINGS,
+    ...(settingsList[0] ?? {}),
+    shopId: resolveShopId(settingsList[0]?.shopId),
+  };
+  let needsMigrationWrite = !settingsList[0]?.shopId;
 
   if (branches.length === 0) {
     branches = [...SEED_BRANCHES];
@@ -142,18 +147,31 @@ export async function initAndLoadSnapshot(): Promise<FullStoreSnapshot> {
     needsMigrationWrite = true;
   }
 
+  const activeShopId = resolveShopId(settings.shopId);
+
   const migratedProducts = products.map((p) => {
+    let changed = false;
+    let next = p;
     if (!p.branchStocks) {
-      needsMigrationWrite = true;
+      changed = true;
       const map: Record<string, number> = { [mainBranchId]: p.stock };
       branches.forEach((b) => {
         if (b.id !== mainBranchId) {
           map[b.id] = Math.max(0, Math.floor(p.stock / 2));
         }
       });
-      return { ...p, branchStocks: map };
+      next = { ...next, branchStocks: map };
     }
-    return p;
+    if (!next.branchId) {
+      changed = true;
+      next = { ...next, branchId: mainBranchId };
+    }
+    if (!next.shopId) {
+      changed = true;
+      next = { ...next, shopId: activeShopId };
+    }
+    if (changed) needsMigrationWrite = true;
+    return next;
   });
 
   if (needsMigrationWrite) {
@@ -194,15 +212,21 @@ export async function saveProduct(
 ): Promise<void> {
   const db = await openDatabase();
   const tx = db.transaction([STORES.PRODUCTS, STORES.MOVEMENTS], 'readwrite');
+  const nowIso = product.updatedAt || new Date().toISOString();
   const branchStocks = { ...(product.branchStocks ?? {}), [branch.id]: product.stock };
+  const shopId = product.shopId || branch.shopId || DEFAULT_SHOP_ID;
   const normalized: Product = {
     ...product,
+    shopId,
+    branchId: product.branchId || branch.id,
     branchStocks,
+    updatedAt: nowIso,
   };
   tx.objectStore(STORES.PRODUCTS).put(normalized);
   if (isNew && product.stock > 0) {
     const mov: StockMovement = {
       id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      shopId,
       productId: product.id,
       sku: product.sku,
       productNameMm: product.nameMm,
@@ -216,7 +240,7 @@ export async function saveProduct(
       newStock: product.stock,
       reason: 'Initial SKU entry',
       synced: !isOffline,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     };
     tx.objectStore(STORES.MOVEMENTS).put(mov);
   }
@@ -271,6 +295,8 @@ export async function bulkImportProducts(params: {
 
       const updatedProd: Product = {
         ...item.existingProduct,
+        shopId: item.existingProduct.shopId || branch.shopId || DEFAULT_SHOP_ID,
+        branchId: item.existingProduct.branchId || branch.id,
         nameMm: item.nameMm,
         nameEn: item.nameEn,
         category: item.category,
@@ -289,6 +315,7 @@ export async function bulkImportProducts(params: {
       if (delta !== 0) {
         movStore.put({
           id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          shopId: updatedProd.shopId,
           productId: updatedProd.id,
           sku: updatedProd.sku,
           productNameMm: updatedProd.nameMm,
@@ -309,6 +336,8 @@ export async function bulkImportProducts(params: {
       const newId = `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const newProd: Product = {
         id: newId,
+        shopId: branch.shopId || DEFAULT_SHOP_ID,
+        branchId: branch.id,
         sku: item.sku,
         nameMm: item.nameMm,
         nameEn: item.nameEn,
@@ -328,6 +357,7 @@ export async function bulkImportProducts(params: {
       if (newProd.stock > 0) {
         movStore.put({
           id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          shopId: newProd.shopId,
           productId: newId,
           sku: newProd.sku,
           productNameMm: newProd.nameMm,
@@ -373,8 +403,12 @@ export async function adjustStock(params: {
   const actualDelta = newStock - previousStock;
   const nowIso = new Date().toISOString();
 
+  const shopId = product.shopId || branch.shopId || DEFAULT_SHOP_ID;
+
   const updatedProduct: Product = {
     ...product,
+    shopId,
+    branchId: product.branchId || branch.id,
     stock: newStock,
     branchStocks: { ...currentMap, [branch.id]: newStock },
     costPrice: newCostPrice !== undefined ? newCostPrice : product.costPrice,
@@ -384,6 +418,7 @@ export async function adjustStock(params: {
 
   const movement: StockMovement = {
     id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    shopId,
     productId: product.id,
     sku: product.sku,
     productNameMm: product.nameMm,
@@ -522,8 +557,11 @@ export async function completeSale(params: {
   const finalPaid = paymentMethod === 'cash' ? amountPaid : total;
   const changeGiven = paymentMethod === 'cash' ? Math.max(0, finalPaid - total) : 0;
 
+  const saleShopId = branch.shopId || DEFAULT_SHOP_ID;
+
   const sale: Sale = {
     id: `sale-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    shopId: saleShopId,
     invoiceNo,
     branchId: branch.id,
     branchNameMm: branch.nameMm,
@@ -551,6 +589,7 @@ export async function completeSale(params: {
     synced: !isOffline,
     note,
     createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
   const tx = db.transaction([STORES.PRODUCTS, STORES.SALES, STORES.MOVEMENTS], 'readwrite');
@@ -565,12 +604,15 @@ export async function completeSale(params: {
       const nextStock = Math.max(0, prevStock - item.qty);
       prodStore.put({
         ...existing,
+        shopId: existing.shopId || saleShopId,
+        branchId: existing.branchId || branch.id,
         stock: nextStock,
         branchStocks: { ...map, [branch.id]: nextStock },
         updatedAt: nowIso,
       });
       const mov: StockMovement = {
         id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        shopId: existing.shopId || saleShopId,
         productId: existing.id,
         sku: existing.sku,
         productNameMm: existing.nameMm,
@@ -939,5 +981,31 @@ export async function replaceLocalStore<T>(
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+export async function replaceLocalStoreForBranch<T extends { id: string; branchId?: string }>(
+  storeName: 'products' | 'sales' | 'movements',
+  branchId: string,
+  mainBranchId: string,
+  records: T[]
+): Promise<T[]> {
+  const db = await openDatabase();
+  const existing = await getAllFromStore<T>(db, storeName);
+  const keptFromOtherBranches = existing.filter((item) => {
+    const itemBranch = item.branchId ?? mainBranchId;
+    return itemBranch !== branchId;
+  });
+  const merged = [...keptFromOtherBranches, ...records];
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  store.clear();
+  merged.forEach((item) => store.put(item));
+
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  return merged;
 }
 

@@ -10,7 +10,7 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "shopId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -46,6 +46,10 @@
           "type": "string",
           "maxLength": 64
         },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
         "serverCreatedAt": {
           "type": "string",
           "format": "date-time"
@@ -57,7 +61,7 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "shopId",
         "code",
         "nameMm",
         "nameEn",
@@ -66,13 +70,14 @@
         "addressEn",
         "isMain",
         "createdAt",
+        "updatedAt",
         "serverCreatedAt",
         "serverUpdatedAt"
       ]
     },
     "Product": {
       "title": "Product",
-      "description": "Mini mart SKU with Myanmar/English names, pricing, barcode SKU, and per-branch stock map.",
+      "description": "Mini mart SKU scoped by shared shopId and branchId, synced in real time across devices.",
       "type": "object",
       "properties": {
         "id": {
@@ -80,7 +85,12 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "shopId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "branchId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -147,7 +157,8 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "shopId",
+        "branchId",
         "sku",
         "nameMm",
         "nameEn",
@@ -165,7 +176,7 @@
     },
     "Sale": {
       "title": "Sale",
-      "description": "POS sale invoice or partial reversal credit note with line items, payment method, and profit.",
+      "description": "POS sale invoice or partial reversal credit note scoped by shopId and branchId.",
       "type": "object",
       "properties": {
         "id": {
@@ -173,7 +184,7 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "shopId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -184,7 +195,8 @@
         },
         "branchId": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "branchNameMm": {
           "type": "string",
@@ -250,6 +262,10 @@
           "type": "string",
           "maxLength": 64
         },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
         "serverCreatedAt": {
           "type": "string",
           "format": "date-time"
@@ -261,7 +277,7 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "shopId",
         "invoiceNo",
         "branchId",
         "items",
@@ -275,13 +291,14 @@
         "status",
         "synced",
         "createdAt",
+        "updatedAt",
         "serverCreatedAt",
         "serverUpdatedAt"
       ]
     },
     "StockMovement": {
       "title": "StockMovement",
-      "description": "Immutable inventory audit trail ledger entry per branch.",
+      "description": "Immutable inventory audit trail ledger entry scoped by shopId and branchId.",
       "type": "object",
       "properties": {
         "id": {
@@ -289,7 +306,7 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "shopId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -312,7 +329,8 @@
         },
         "branchId": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "branchNameMm": {
           "type": "string",
@@ -361,11 +379,12 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "shopId",
         "productId",
         "sku",
         "productNameMm",
         "productNameEn",
+        "branchId",
         "type",
         "delta",
         "previousStock",
@@ -378,7 +397,7 @@
     },
     "StoreSettings": {
       "title": "StoreSettings",
-      "description": "Store profile, default language, theme preference, and active branch selection.",
+      "description": "Store profile, shopId, default language, theme preference, and multi-branch toggle.",
       "type": "object",
       "properties": {
         "id": {
@@ -386,7 +405,7 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "shopId": {
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -438,6 +457,10 @@
           "type": "string",
           "maxLength": 64
         },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
         "serverCreatedAt": {
           "type": "string",
           "format": "date-time"
@@ -449,7 +472,7 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "shopId",
         "storeNameMm",
         "storeNameEn",
         "phone",
@@ -458,6 +481,7 @@
         "receiptFooterMm",
         "receiptFooterEn",
         "defaultLanguage",
+        "updatedAt",
         "serverCreatedAt",
         "serverUpdatedAt"
       ]
@@ -468,31 +492,31 @@
       "schema": {
         "$ref": "#/entities/Branch"
       },
-      "description": "Store branches synced in real time across devices for the authenticated store owner."
+      "description": "Store branches synced in real time across all devices in the same shopId."
     },
     "/products/{productId}": {
       "schema": {
         "$ref": "#/entities/Product"
       },
-      "description": "Mini mart product catalog and per-branch inventory counts synced in real time."
+      "description": "Mini mart product catalog scoped by shopId and branchId, synced in real time across devices."
     },
     "/sales/{saleId}": {
       "schema": {
         "$ref": "#/entities/Sale"
       },
-      "description": "Completed POS sales, voided invoices, and partial reversal credit notes synced in real time."
+      "description": "Completed POS sales, voided invoices, and partial reversal credit notes scoped by shopId and branchId."
     },
     "/movements/{movementId}": {
       "schema": {
         "$ref": "#/entities/StockMovement"
       },
-      "description": "Stock audit movements synced across branches."
+      "description": "Stock audit movements scoped by shopId and branchId."
     },
     "/settings/{settingsId}": {
       "schema": {
         "$ref": "#/entities/StoreSettings"
       },
-      "description": "Store configuration, active branch, language, and theme settings per owner."
+      "description": "Store configuration and shopId settings shared across devices."
     }
   }
 }

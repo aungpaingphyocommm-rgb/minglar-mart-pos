@@ -23,6 +23,7 @@ export type MovementType =
 
 export interface Branch {
   id: string;
+  shopId?: string;
   code: string;
   nameMm: string;
   nameEn: string;
@@ -31,10 +32,13 @@ export interface Branch {
   addressEn: string;
   isMain: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Product {
   id: string;
+  shopId?: string;
+  branchId?: string;
   sku: string;
   nameMm: string;
   nameEn: string;
@@ -77,6 +81,7 @@ export interface SaleItem {
 
 export interface Sale {
   id: string;
+  shopId?: string;
   invoiceNo: string;
   branchId?: string;
   branchNameMm?: string;
@@ -97,10 +102,12 @@ export interface Sale {
   reversedItems?: Record<string, number>;
   reversalOfInvoiceNo?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface StockMovement {
   id: string;
+  shopId?: string;
   productId: string;
   sku: string;
   productNameMm: string;
@@ -121,6 +128,7 @@ export type ThemeMode = 'light' | 'dark';
 
 export interface StoreSettings {
   id: 'default';
+  shopId?: string;
   storeNameMm: string;
   storeNameEn: string;
   phone: string;
@@ -133,4 +141,5 @@ export interface StoreSettings {
   activeBranchId?: string;
   multiBranchEnabled?: boolean;
   lastSyncedAt: string | null;
+  updatedAt?: string;
 }

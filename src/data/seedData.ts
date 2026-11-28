@@ -1,3 +1,4 @@
+import { DEFAULT_SHOP_ID } from '../firebase';
 import { Branch, Product, Sale, StockMovement, StoreSettings } from '../types/pos';
 
 const now = Date.now();
@@ -5,6 +6,7 @@ const now = Date.now();
 export const SEED_BRANCHES: Branch[] = [
   {
     id: 'branch-1',
+    shopId: DEFAULT_SHOP_ID,
     code: 'YGN-01',
     nameMm: 'ပင်မဆိုင် (လှည်းတန်း)',
     nameEn: 'Main Store (Hledan)',
@@ -16,6 +18,7 @@ export const SEED_BRANCHES: Branch[] = [
   },
   {
     id: 'branch-2',
+    shopId: DEFAULT_SHOP_ID,
     code: 'YGN-02',
     nameMm: 'ဆိုင်ခွဲ ၂ (စမ်းချောင်း)',
     nameEn: 'Branch 2 (Sanchaung)',
@@ -29,6 +32,7 @@ export const SEED_BRANCHES: Branch[] = [
 
 export const DEFAULT_SETTINGS: StoreSettings = {
   id: 'default',
+  shopId: DEFAULT_SHOP_ID,
   storeNameMm: 'မင်္ဂလာမတ် (Mingalar Mart)',
   storeNameEn: 'Mingalar Mini Mart',
   phone: '09-789 456 123',
@@ -43,7 +47,7 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   lastSyncedAt: new Date(now - 1000 * 60 * 35).toISOString(),
 };
 
-export const SEED_PRODUCTS: Product[] = [
+const RAW_SEED_PRODUCTS: Product[] = [
   {
     id: 'prod-1',
     sku: '8850124001012',
@@ -285,6 +289,12 @@ export const SEED_PRODUCTS: Product[] = [
     updatedAt: new Date(now - 3600000).toISOString(),
   },
 ];
+
+export const SEED_PRODUCTS: Product[] = RAW_SEED_PRODUCTS.map((p) => ({
+  ...p,
+  shopId: DEFAULT_SHOP_ID,
+  branchId: 'branch-1',
+}));
 
 export const SEED_SALES: Sale[] = [
   {

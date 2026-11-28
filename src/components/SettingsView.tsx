@@ -52,6 +52,7 @@ interface SettingsViewProps {
   firebaseProjectId: string | null;
   firebaseConfigSource: 'VITE_FIREBASE_CONFIG' | 'VITE_FIREBASE_*' | null;
   firebaseConfigError: string | null;
+  shopId: string;
   authUser: { uid: string; isAnonymous: boolean } | null;
   firestoreMeta: {
     active: boolean;
@@ -90,6 +91,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   firebaseProjectId,
   firebaseConfigSource,
   firebaseConfigError,
+  shopId,
   authUser,
   firestoreMeta,
 }) => {
@@ -512,6 +514,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </span>
                 ) : authUser ? (
                   <>
+                    <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                      Shop: {shopId}
+                    </span>
+                    {' · '}
+                    <span className="font-mono-num font-medium text-[var(--text-primary)]">
+                      Branch: {activeBranch.id}
+                    </span>
+                    {' · '}
                     {firebaseProjectId && (
                       <>
                         <span className="font-mono-num font-medium text-[var(--text-primary)]">
@@ -520,10 +530,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         {' · '}
                       </>
                     )}
-                    <span className="font-mono-num font-medium text-[var(--text-primary)]">
-                      UID: {authUser.uid.slice(0, 10)}...
-                    </span>
-                    {' · '}
                     {firestoreMeta.hasPendingWrites
                       ? lang === 'mm'
                         ? 'Offline Writes စောင့်ဆိုင်းနေသည်'

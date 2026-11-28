@@ -61,6 +61,7 @@ import {
   removeBranch,
   removeProduct,
   replaceLocalStore,
+  replaceLocalStoreForBranch,
   resetToSeedData,
   restoreSnapshot,
   reverseSale,
@@ -81,6 +82,7 @@ import {
   isFirestoreCacheError,
   persistencePromise,
   recoverFromFirestoreCacheError,
+  resolveShopId,
 } from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { UI_TEXT, t } from './i18n/translations';
@@ -272,11 +274,28 @@ export default function App() {
     setFirestoreMeta((prev) => ({ ...prev, error: msg }));
   }, []);
 
-  const cloudUid = authUser?.isAnonymous ? authUser.uid : null;
+  // Anonymous Auth is used strictly for login, never for shop/data isolation
+  const isCloudSignedIn = Boolean(authUser?.isAnonymous);
+  const activeShopId = resolveShopId(settings.shopId);
+  const multiBranchEnabled = settings.multiBranchEnabled !== false;
 
-  // Attach real-time Firestore listeners once Anonymous Auth is ready
+  const mainBranch = useMemo(
+    () => branches.find((b) => b.isMain) ?? branches[0] ?? SEED_BRANCHES[0],
+    [branches]
+  );
+
+  const activeBranch = useMemo(() => {
+    if (!multiBranchEnabled) {
+      return mainBranch;
+    }
+    return branches.find((b) => b.id === settings.activeBranchId) ?? mainBranch;
+  }, [branches, settings.activeBranchId, multiBranchEnabled, mainBranch]);
+
+  const selectedBranchId = activeBranch.id;
+
+  // Attach real-time Firestore listeners once Anonymous Auth is ready using shared shopId + selectedBranchId
   useEffect(() => {
-    if (!authReady || loading || !cloudUid) {
+    if (!authReady || loading || !isCloudSignedIn) {
       return;
     }
 
@@ -284,7 +303,8 @@ export default function App() {
     setFirestoreMeta((prev) => ({ ...prev, active: true, error: null }));
 
     const unsubscribe = subscribeToStoreCollections({
-      ownerId: cloudUid,
+      shopId: activeShopId,
+      branchId: selectedBranchId,
       onBranches: (remoteBranches, meta) => {
         setFirestoreMeta((prev) => ({
           ...prev,
@@ -292,7 +312,7 @@ export default function App() {
           fromCache: meta.fromCache,
           hasPendingWrites: meta.hasPendingWrites,
         }));
-        if (remoteBranches.length > 0 || cloudInitialized) {
+        if (meta.cloudHasData || cloudInitialized) {
           if (remoteBranches.length > 0) {
             cloudInitialized = true;
             setBranches(remoteBranches);
@@ -307,10 +327,16 @@ export default function App() {
           fromCache: meta.fromCache,
           hasPendingWrites: meta.hasPendingWrites,
         }));
-        if (remoteProducts.length > 0 || cloudInitialized) {
+        if (meta.cloudHasData || remoteProducts.length > 0 || cloudInitialized) {
           cloudInitialized = true;
-          setProducts(remoteProducts);
-          void replaceLocalStore('products', remoteProducts);
+          void replaceLocalStoreForBranch(
+            'products',
+            selectedBranchId,
+            mainBranch.id,
+            remoteProducts
+          ).then((merged) => {
+            setProducts(merged.sort((a, b) => a.nameEn.localeCompare(b.nameEn)));
+          });
         }
       },
       onSales: (remoteSales, meta) => {
@@ -320,31 +346,51 @@ export default function App() {
           fromCache: meta.fromCache,
           hasPendingWrites: meta.hasPendingWrites,
         }));
-        if (remoteSales.length > 0 || cloudInitialized) {
-          setSales(remoteSales);
-          void replaceLocalStore('sales', remoteSales);
+        if (meta.cloudHasData || remoteSales.length > 0 || cloudInitialized) {
+          void replaceLocalStoreForBranch(
+            'sales',
+            selectedBranchId,
+            mainBranch.id,
+            remoteSales
+          ).then((merged) => {
+            setSales(merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+          });
         }
       },
-      onMovements: (remoteMovements) => {
-        if (remoteMovements.length > 0 || cloudInitialized) {
-          setMovements(remoteMovements);
-          void replaceLocalStore('movements', remoteMovements);
+      onMovements: (remoteMovements, meta) => {
+        if (meta.cloudHasData || remoteMovements.length > 0 || cloudInitialized) {
+          void replaceLocalStoreForBranch(
+            'movements',
+            selectedBranchId,
+            mainBranch.id,
+            remoteMovements
+          ).then((merged) => {
+            setMovements(merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+          });
         }
       },
       onSettings: (remoteSettings) => {
         if (remoteSettings) {
-          setSettings(remoteSettings);
+          setSettings((prev) => {
+            const merged: StoreSettings = {
+              ...prev,
+              ...remoteSettings,
+              shopId: resolveShopId(remoteSettings.shopId ?? prev.shopId),
+              // Keep each device's local branch & theme selection independent
+              activeBranchId: prev.activeBranchId ?? remoteSettings.activeBranchId,
+              theme: prev.theme ?? remoteSettings.theme,
+            };
+            void replaceLocalStore('settings', [merged]);
+            return merged;
+          });
           setLang(remoteSettings.defaultLanguage);
-          if (remoteSettings.theme) {
-            setTheme(remoteSettings.theme);
-          }
-          void replaceLocalStore('settings', [remoteSettings]);
         }
       },
       onInitialEmptyCloud: () => {
         cloudInitialized = true;
         pushSnapshotToFirestore(
-          cloudUid,
+          activeShopId,
+          selectedBranchId,
           latestSnapshotRef.current,
           handleFirestoreSyncError
         );
@@ -355,26 +401,26 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [authReady, cloudUid, loading, handleFirestoreSyncError]);
+  }, [
+    authReady,
+    isCloudSignedIn,
+    loading,
+    activeShopId,
+    selectedBranchId,
+    mainBranch.id,
+    handleFirestoreSyncError,
+  ]);
 
-  const multiBranchEnabled = settings.multiBranchEnabled !== false;
-
-  const activeBranch = useMemo(() => {
-    const mainBranch = branches.find((b) => b.isMain) ?? branches[0] ?? SEED_BRANCHES[0];
-    if (!multiBranchEnabled) {
-      return mainBranch;
-    }
-    return branches.find((b) => b.id === settings.activeBranchId) ?? mainBranch;
-  }, [branches, settings.activeBranchId, multiBranchEnabled]);
-
-  // Scope products to the active branch's stock level while preserving full branchStocks map
+  // Scope products to the selected branch so all devices on same shop + branch see the exact same product count
   const branchProducts = useMemo(
     () =>
-      products.map((p) => ({
-        ...p,
-        stock: p.branchStocks ? p.branchStocks[activeBranch.id] ?? 0 : p.stock,
-      })),
-    [products, activeBranch.id]
+      products
+        .filter((p) => (p.branchId || mainBranch.id) === activeBranch.id)
+        .map((p) => ({
+          ...p,
+          stock: p.branchStocks ? p.branchStocks[activeBranch.id] ?? p.stock : p.stock,
+        })),
+    [products, activeBranch.id, mainBranch.id]
   );
 
   const pendingSyncCount = useMemo(() => {
@@ -399,16 +445,17 @@ export default function App() {
   // cloudUid is derived above auth listener effect
 
   const handleToggleMultiBranch = async (enabled: boolean) => {
-    const mainBranch = branches.find((b) => b.isMain) ?? branches[0] ?? SEED_BRANCHES[0];
     const updated: StoreSettings = {
       ...settings,
+      shopId: activeShopId,
       multiBranchEnabled: enabled,
       activeBranchId: enabled ? settings.activeBranchId ?? mainBranch.id : mainBranch.id,
+      updatedAt: new Date().toISOString(),
     };
     setSettings(updated);
     await saveSettings(updated);
-    if (cloudUid) {
-      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      syncSettingsToFirestore(activeShopId, updated, handleFirestoreSyncError);
     }
   };
 
@@ -416,35 +463,32 @@ export default function App() {
     const updated: StoreSettings = { ...settings, activeBranchId: branchId };
     setSettings(updated);
     await saveSettings(updated);
-    if (cloudUid) {
-      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
-    }
   };
 
   const handleSaveBranch = async (branch: Branch) => {
-    await saveBranch(branch);
+    const withShop: Branch = {
+      ...branch,
+      shopId: activeShopId,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveBranch(withShop);
     await reloadSnapshot();
-    if (cloudUid) {
-      syncBranchToFirestore(cloudUid, branch, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      syncBranchToFirestore(activeShopId, withShop, handleFirestoreSyncError);
     }
   };
 
   const handleDeleteBranch = async (branchId: string) => {
     await removeBranch(branchId);
-    let updatedSettings: StoreSettings | null = null;
     if (settings.activeBranchId === branchId) {
       const main = branches.find((b) => b.isMain && b.id !== branchId) ?? branches[0];
       if (main) {
-        updatedSettings = { ...settings, activeBranchId: main.id };
-        await saveSettings(updatedSettings);
+        await saveSettings({ ...settings, activeBranchId: main.id });
       }
     }
     await reloadSnapshot();
-    if (cloudUid) {
-      deleteBranchFromFirestore(cloudUid, branchId, handleFirestoreSyncError);
-      if (updatedSettings) {
-        syncSettingsToFirestore(cloudUid, updatedSettings, handleFirestoreSyncError);
-      }
+    if (isCloudSignedIn) {
+      deleteBranchFromFirestore(activeShopId, branchId, handleFirestoreSyncError);
     }
   };
 
@@ -456,38 +500,45 @@ export default function App() {
   }) => {
     const createdSale = await completeSale({
       ...params,
-      branch: activeBranch,
+      branch: { ...activeBranch, shopId: activeShopId },
       existingSalesCount: sales.length,
       isOffline,
     });
     const snap = await reloadSnapshot();
     setReceiptSale(createdSale);
-    if (cloudUid) {
-      syncSaleToFirestore(cloudUid, createdSale, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      syncSaleToFirestore(activeShopId, createdSale, handleFirestoreSyncError);
       const cartIds = new Set(params.cart.map((c) => c.productId));
       snap.products
         .filter((p) => cartIds.has(p.id))
-        .forEach((p) => syncProductToFirestore(cloudUid, p, handleFirestoreSyncError));
+        .forEach((p) => syncProductToFirestore(activeShopId, p, handleFirestoreSyncError));
       snap.movements
         .filter((m) => m.reason === createdSale.invoiceNo)
-        .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+        .forEach((m) => syncMovementToFirestore(activeShopId, m, handleFirestoreSyncError));
     }
   };
 
   const handleSaveProduct = async (product: Product, isNew: boolean) => {
-    await saveProduct(product, isNew, activeBranch, isOffline);
+    const nowIso = new Date().toISOString();
+    const enriched: Product = {
+      ...product,
+      shopId: activeShopId,
+      branchId: product.branchId || activeBranch.id,
+      updatedAt: nowIso,
+    };
+    await saveProduct(enriched, isNew, { ...activeBranch, shopId: activeShopId }, isOffline);
     const snap = await reloadSnapshot();
-    if (cloudUid) {
+    if (isCloudSignedIn) {
       const savedProd = snap.products.find((p) => p.id === product.id);
       if (savedProd) {
-        syncProductToFirestore(cloudUid, savedProd, handleFirestoreSyncError);
+        syncProductToFirestore(activeShopId, savedProd, handleFirestoreSyncError);
       }
       if (isNew && product.stock > 0) {
         const initMov = snap.movements.find(
           (m) => m.productId === product.id && m.type === 'initial'
         );
         if (initMov) {
-          syncMovementToFirestore(cloudUid, initMov, handleFirestoreSyncError);
+          syncMovementToFirestore(activeShopId, initMov, handleFirestoreSyncError);
         }
       }
     }
@@ -496,8 +547,8 @@ export default function App() {
   const handleDeleteProduct = async (productId: string) => {
     await removeProduct(productId);
     await reloadSnapshot();
-    if (cloudUid) {
-      deleteProductFromFirestore(cloudUid, productId, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      deleteProductFromFirestore(activeShopId, productId, handleFirestoreSyncError);
     }
   };
 
@@ -508,12 +559,12 @@ export default function App() {
     const res = await bulkImportProducts({
       items: params.items,
       stockMode: params.stockMode,
-      branch: activeBranch,
+      branch: { ...activeBranch, shopId: activeShopId },
       isOffline,
     });
     const snap = await reloadSnapshot();
-    if (cloudUid) {
-      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      pushSnapshotToFirestore(activeShopId, selectedBranchId, snap, handleFirestoreSyncError);
     }
     return res;
   };
@@ -527,13 +578,13 @@ export default function App() {
   }) => {
     const { updatedProduct, movement } = await adjustStock({
       ...params,
-      branch: activeBranch,
+      branch: { ...activeBranch, shopId: activeShopId },
       isOffline,
     });
     await reloadSnapshot();
-    if (cloudUid) {
-      syncProductToFirestore(cloudUid, updatedProduct, handleFirestoreSyncError);
-      syncMovementToFirestore(cloudUid, movement, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      syncProductToFirestore(activeShopId, updatedProduct, handleFirestoreSyncError);
+      syncMovementToFirestore(activeShopId, movement, handleFirestoreSyncError);
     }
   };
 
@@ -549,10 +600,10 @@ export default function App() {
       isOffline,
     });
     const snap = await reloadSnapshot();
-    if (cloudUid) {
+    if (isCloudSignedIn) {
       const updatedProd = snap.products.find((p) => p.id === params.product.id);
       if (updatedProd) {
-        syncProductToFirestore(cloudUid, updatedProd, handleFirestoreSyncError);
+        syncProductToFirestore(activeShopId, updatedProd, handleFirestoreSyncError);
       }
       snap.movements
         .filter(
@@ -561,7 +612,7 @@ export default function App() {
             (m.type === 'transfer_in' || m.type === 'transfer_out')
         )
         .slice(0, 2)
-        .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+        .forEach((m) => syncMovementToFirestore(activeShopId, m, handleFirestoreSyncError));
     }
   };
 
@@ -580,19 +631,27 @@ export default function App() {
     if (reversalRecord) {
       setReceiptSale(reversalRecord);
     }
-    if (cloudUid) {
+    if (isCloudSignedIn) {
       const updatedOrig = snap.sales.find((s) => s.id === params.saleId);
       if (updatedOrig) {
-        syncSaleToFirestore(cloudUid, updatedOrig, handleFirestoreSyncError);
+        syncSaleToFirestore(
+          activeShopId,
+          { ...updatedOrig, shopId: activeShopId, updatedAt: new Date().toISOString() },
+          handleFirestoreSyncError
+        );
       }
       if (reversalRecord && reversalRecord.id !== params.saleId) {
-        syncSaleToFirestore(cloudUid, reversalRecord, handleFirestoreSyncError);
+        syncSaleToFirestore(
+          activeShopId,
+          { ...reversalRecord, shopId: activeShopId, updatedAt: new Date().toISOString() },
+          handleFirestoreSyncError
+        );
       }
       if (params.restoreStock) {
         const retIds = new Set(params.itemsToReturn.map((i) => i.productId));
         snap.products
           .filter((p) => retIds.has(p.id))
-          .forEach((p) => syncProductToFirestore(cloudUid, p, handleFirestoreSyncError));
+          .forEach((p) => syncProductToFirestore(activeShopId, p, handleFirestoreSyncError));
         snap.movements
           .filter(
             (m) =>
@@ -601,20 +660,29 @@ export default function App() {
               m.reason.includes(updatedOrig.invoiceNo)
           )
           .slice(0, retIds.size)
-          .forEach((m) => syncMovementToFirestore(cloudUid, m, handleFirestoreSyncError));
+          .forEach((m) => syncMovementToFirestore(activeShopId, m, handleFirestoreSyncError));
       }
     }
   };
 
   const handleSaveSettings = async (next: StoreSettings) => {
-    await saveSettings(next);
-    setLang(next.defaultLanguage);
-    if (next.theme) {
-      setTheme(next.theme);
+    const updated: StoreSettings = {
+      ...next,
+      shopId: resolveShopId(next.shopId),
+      updatedAt: new Date().toISOString(),
+    };
+    await saveSettings(updated);
+    setLang(updated.defaultLanguage);
+    if (updated.theme) {
+      setTheme(updated.theme);
     }
     const snap = await reloadSnapshot();
-    if (cloudUid) {
-      syncSettingsToFirestore(cloudUid, snap.settings, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      syncSettingsToFirestore(
+        resolveShopId(snap.settings.shopId),
+        snap.settings,
+        handleFirestoreSyncError
+      );
     }
   };
 
@@ -623,9 +691,6 @@ export default function App() {
     const updated: StoreSettings = { ...settings, theme: nextTheme };
     setSettings(updated);
     await saveSettings(updated);
-    if (cloudUid) {
-      syncSettingsToFirestore(cloudUid, updated, handleFirestoreSyncError);
-    }
   };
 
   const handleSyncNow = async () => {
@@ -633,8 +698,7 @@ export default function App() {
       throw new Error(firebaseConfigError ?? 'VITE_FIREBASE_CONFIG missing or invalid JSON');
     }
 
-    let uid = cloudUid;
-    if (!uid) {
+    if (!isCloudSignedIn) {
       if (isOffline) {
         throw new Error(
           lang === 'mm'
@@ -642,15 +706,21 @@ export default function App() {
             : 'Connect to the internet to initialize Anonymous Cloud Sync'
         );
       }
-      const anonUser = await ensureAnonymousAuth();
-      uid = anonUser.uid;
+      await ensureAnonymousAuth();
     }
 
     await syncPendingRecords();
     const snap = await reloadSnapshot();
-    await pushSnapshotToFirestoreAsync(uid, snap, isOffline, handleFirestoreSyncError);
+    await pushSnapshotToFirestoreAsync(
+      activeShopId,
+      selectedBranchId,
+      snap,
+      isOffline,
+      handleFirestoreSyncError
+    );
     const syncedSettings: StoreSettings = {
       ...snap.settings,
+      shopId: activeShopId,
       lastSyncedAt: new Date().toISOString(),
     };
     await saveSettings(syncedSettings);
@@ -663,8 +733,13 @@ export default function App() {
     const reloaded = await reloadSnapshot();
     setLang(reloaded.settings.defaultLanguage);
     setTheme(reloaded.settings.theme ?? 'light');
-    if (cloudUid) {
-      pushSnapshotToFirestore(cloudUid, reloaded, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      pushSnapshotToFirestore(
+        resolveShopId(reloaded.settings.shopId),
+        reloaded.settings.activeBranchId || selectedBranchId,
+        reloaded,
+        handleFirestoreSyncError
+      );
     }
   };
 
@@ -677,8 +752,13 @@ export default function App() {
     setSettings(snap.settings);
     setLang(snap.settings.defaultLanguage);
     setTheme(snap.settings.theme ?? 'light');
-    if (cloudUid) {
-      pushSnapshotToFirestore(cloudUid, snap, handleFirestoreSyncError);
+    if (isCloudSignedIn) {
+      pushSnapshotToFirestore(
+        resolveShopId(snap.settings.shopId),
+        snap.settings.activeBranchId || 'branch-1',
+        snap,
+        handleFirestoreSyncError
+      );
     }
   };
 
@@ -688,9 +768,9 @@ export default function App() {
     const sampleMovementIds = SEED_MOVEMENTS.map((m) => m.id);
     const res = await deleteSampleData();
     await reloadSnapshot();
-    if (cloudUid) {
+    if (isCloudSignedIn) {
       deleteIdsFromFirestore(
-        cloudUid,
+        activeShopId,
         {
           productIds: sampleProductIds,
           saleIds: sampleSaleIds,
@@ -703,14 +783,20 @@ export default function App() {
   };
 
   const handleClearAllData = async () => {
-    const pIds = products.map((p) => p.id);
-    const sIds = sales.map((s) => s.id);
-    const mIds = movements.map((m) => m.id);
+    const pIds = products
+      .filter((p) => (p.branchId || mainBranch.id) === selectedBranchId)
+      .map((p) => p.id);
+    const sIds = sales
+      .filter((s) => (s.branchId || mainBranch.id) === selectedBranchId)
+      .map((s) => s.id);
+    const mIds = movements
+      .filter((m) => (m.branchId || mainBranch.id) === selectedBranchId)
+      .map((m) => m.id);
     await clearAllStoreData();
     await reloadSnapshot();
-    if (cloudUid) {
+    if (isCloudSignedIn) {
       deleteIdsFromFirestore(
-        cloudUid,
+        activeShopId,
         { productIds: pIds, saleIds: sIds, movementIds: mIds },
         handleFirestoreSyncError
       );
@@ -1046,6 +1132,7 @@ export default function App() {
             firebaseProjectId={firebaseProjectId}
             firebaseConfigSource={firebaseConfigSource}
             firebaseConfigError={firebaseConfigError}
+            shopId={activeShopId}
             authUser={
               authUser
                 ? {

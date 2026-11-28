@@ -37,34 +37,35 @@ service cloud.firestore {
       );
     }
 
-    function isOwner(data) {
-      return isSignedIn() && data.ownerId == request.auth.uid;
+    // Anonymous Auth is used strictly for authentication; shop isolation uses shared shopId
+    function isShopAccess(data) {
+      return isSignedIn() && isValidId(data.shopId);
     }
 
     function isOptionalString(data, key, maxLen) {
       return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
     }
 
-    function branchDocExistsForOwner(branchId) {
-      return exists(/databases/$(database)/documents/branches/$(request.auth.uid + '_' + branchId))
-        || existsAfter(/databases/$(database)/documents/branches/$(request.auth.uid + '_' + branchId));
+    function branchDocExistsForShop(shopId, branchId) {
+      return exists(/databases/$(database)/documents/branches/$(shopId + '_' + branchId))
+        || existsAfter(/databases/$(database)/documents/branches/$(shopId + '_' + branchId));
     }
 
     // Entity Validation Blueprints
     function isValidBranch(data, docId) {
       return isValidId(docId)
       && data.keys().hasAll([
-        'id', 'ownerId', 'code', 'nameMm', 'nameEn',
+        'id', 'shopId', 'code', 'nameMm', 'nameEn',
         'phone', 'addressMm', 'addressEn', 'isMain',
-        'createdAt', 'serverCreatedAt', 'serverUpdatedAt'
+        'createdAt', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'ownerId', 'code', 'nameMm', 'nameEn',
+        'id', 'shopId', 'code', 'nameMm', 'nameEn',
         'phone', 'addressMm', 'addressEn', 'isMain',
-        'createdAt', 'serverCreatedAt', 'serverUpdatedAt'
+        'createdAt', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && isValidId(data.id)
-      && isValidId(data.ownerId)
+      && isValidId(data.shopId)
       && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
       && data.nameMm is string && data.nameMm.size() >= 1 && data.nameMm.size() <= 120
       && data.nameEn is string && data.nameEn.size() >= 1 && data.nameEn.size() <= 120
@@ -73,6 +74,7 @@ service cloud.firestore {
       && data.addressEn is string && data.addressEn.size() <= 300
       && data.isMain is bool
       && data.createdAt is string && data.createdAt.size() <= 64
+      && data.updatedAt is string && data.updatedAt.size() <= 64
       && data.serverCreatedAt is timestamp
       && data.serverUpdatedAt is timestamp;
     }
@@ -80,17 +82,18 @@ service cloud.firestore {
     function isValidProduct(data, docId) {
       return isValidId(docId)
       && data.keys().hasAll([
-        'id', 'ownerId', 'sku', 'nameMm', 'nameEn', 'category',
+        'id', 'shopId', 'branchId', 'sku', 'nameMm', 'nameEn', 'category',
         'costPrice', 'sellPrice', 'stock', 'minStock',
         'unitMm', 'unitEn', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'ownerId', 'sku', 'nameMm', 'nameEn', 'category',
+        'id', 'shopId', 'branchId', 'sku', 'nameMm', 'nameEn', 'category',
         'costPrice', 'sellPrice', 'stock', 'branchStocks', 'minStock',
         'unitMm', 'unitEn', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && isValidId(data.id)
-      && isValidId(data.ownerId)
+      && isValidId(data.shopId)
+      && isValidId(data.branchId)
       && data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64
       && data.nameMm is string && data.nameMm.size() >= 1 && data.nameMm.size() <= 160
       && data.nameEn is string && data.nameEn.size() >= 1 && data.nameEn.size() <= 160
@@ -110,21 +113,21 @@ service cloud.firestore {
     function isValidSale(data, docId) {
       return isValidId(docId)
       && data.keys().hasAll([
-        'id', 'ownerId', 'invoiceNo', 'branchId', 'items',
+        'id', 'shopId', 'invoiceNo', 'branchId', 'items',
         'subtotal', 'discount', 'total', 'profit',
         'paymentMethod', 'amountPaid', 'changeGiven',
-        'status', 'synced', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt'
+        'status', 'synced', 'createdAt', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'ownerId', 'invoiceNo', 'branchId', 'branchNameMm', 'branchNameEn',
+        'id', 'shopId', 'invoiceNo', 'branchId', 'branchNameMm', 'branchNameEn',
         'items', 'subtotal', 'discount', 'total', 'profit',
         'paymentMethod', 'amountPaid', 'changeGiven',
         'status', 'synced', 'note', 'reversalReason', 'reversedAt',
         'reversedItems', 'reversalOfInvoiceNo',
-        'createdAt', 'serverCreatedAt', 'serverUpdatedAt'
+        'createdAt', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && isValidId(data.id)
-      && isValidId(data.ownerId)
+      && isValidId(data.shopId)
       && data.invoiceNo is string && data.invoiceNo.size() >= 1 && data.invoiceNo.size() <= 64
       && isValidId(data.branchId)
       && isOptionalString(data, 'branchNameMm', 120)
@@ -148,6 +151,7 @@ service cloud.firestore {
       && (!('reversedItems' in data) || (data.reversedItems is map && data.reversedItems.size() <= 100))
       && isOptionalString(data, 'reversalOfInvoiceNo', 64)
       && data.createdAt is string && data.createdAt.size() <= 64
+      && data.updatedAt is string && data.updatedAt.size() <= 64
       && data.serverCreatedAt is timestamp
       && data.serverUpdatedAt is timestamp;
     }
@@ -155,23 +159,23 @@ service cloud.firestore {
     function isValidMovement(data, docId) {
       return isValidId(docId)
       && data.keys().hasAll([
-        'id', 'ownerId', 'productId', 'sku', 'productNameMm', 'productNameEn',
+        'id', 'shopId', 'productId', 'sku', 'productNameMm', 'productNameEn', 'branchId',
         'type', 'delta', 'previousStock', 'newStock', 'reason', 'synced',
         'createdAt', 'serverCreatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'ownerId', 'productId', 'sku', 'productNameMm', 'productNameEn',
+        'id', 'shopId', 'productId', 'sku', 'productNameMm', 'productNameEn',
         'branchId', 'branchNameMm', 'branchNameEn',
         'type', 'delta', 'previousStock', 'newStock', 'reason', 'synced',
         'createdAt', 'serverCreatedAt'
       ])
       && isValidId(data.id)
-      && isValidId(data.ownerId)
+      && isValidId(data.shopId)
       && isValidId(data.productId)
+      && isValidId(data.branchId)
       && data.sku is string && data.sku.size() <= 64
       && data.productNameMm is string && data.productNameMm.size() <= 160
       && data.productNameEn is string && data.productNameEn.size() <= 160
-      && isOptionalString(data, 'branchId', 128)
       && isOptionalString(data, 'branchNameMm', 120)
       && isOptionalString(data, 'branchNameEn', 120)
       && data.type in ['sale', 'restock', 'adjustment', 'void', 'initial', 'transfer_in', 'transfer_out']
@@ -187,18 +191,18 @@ service cloud.firestore {
     function isValidSettings(data, docId) {
       return isValidId(docId)
       && data.keys().hasAll([
-        'id', 'ownerId', 'storeNameMm', 'storeNameEn', 'phone',
+        'id', 'shopId', 'storeNameMm', 'storeNameEn', 'phone',
         'addressMm', 'addressEn', 'receiptFooterMm', 'receiptFooterEn',
-        'defaultLanguage', 'serverCreatedAt', 'serverUpdatedAt'
+        'defaultLanguage', 'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'ownerId', 'storeNameMm', 'storeNameEn', 'phone',
+        'id', 'shopId', 'storeNameMm', 'storeNameEn', 'phone',
         'addressMm', 'addressEn', 'receiptFooterMm', 'receiptFooterEn',
         'defaultLanguage', 'theme', 'activeBranchId', 'multiBranchEnabled', 'lastSyncedAt',
-        'serverCreatedAt', 'serverUpdatedAt'
+        'updatedAt', 'serverCreatedAt', 'serverUpdatedAt'
       ])
       && data.id is string && data.id.size() <= 128
-      && isValidId(data.ownerId)
+      && isValidId(data.shopId)
       && data.storeNameMm is string && data.storeNameMm.size() <= 120
       && data.storeNameEn is string && data.storeNameEn.size() <= 120
       && data.phone is string && data.phone.size() <= 40
@@ -211,6 +215,7 @@ service cloud.firestore {
       && isOptionalString(data, 'activeBranchId', 128)
       && (!('multiBranchEnabled' in data) || data.multiBranchEnabled is bool)
       && (!('lastSyncedAt' in data) || data.lastSyncedAt == null || (data.lastSyncedAt is string && data.lastSyncedAt.size() <= 64))
+      && data.updatedAt is string && data.updatedAt.size() <= 64
       && data.serverCreatedAt is timestamp
       && data.serverUpdatedAt is timestamp;
     }
@@ -221,20 +226,19 @@ service cloud.firestore {
       allow list, create, update, delete: if false;
     }
 
-    // Branches Collection (Real-Time Sync + Owner/Admin Isolation)
+    // Branches Collection (Shared Shop Real-Time Sync across devices)
     match /branches/{branchId} {
-      allow get: if isValidId(branchId) && (isOwner(existing()) || isAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(branchId) && (isShopAccess(existing()) || isAdmin());
+      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
       allow create: if isSignedIn()
         && isValidId(branchId)
         && isValidBranch(incoming(), branchId)
-        && incoming().ownerId == request.auth.uid
         && incoming().serverCreatedAt == request.time
         && incoming().serverUpdatedAt == request.time;
       allow update: if isSignedIn()
         && isValidId(branchId)
         && isValidBranch(incoming(), branchId)
-        && incoming().ownerId == existing().ownerId
+        && incoming().shopId == existing().shopId
         && incoming().id == existing().id
         && incoming().createdAt == existing().createdAt
         && incoming().serverCreatedAt == existing().serverCreatedAt
@@ -242,36 +246,36 @@ service cloud.firestore {
         && (
           isAdmin()
           || (
-            isOwner(existing())
+            isShopAccess(existing())
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'code', 'nameMm', 'nameEn', 'phone', 'addressMm', 'addressEn', 'isMain', 'serverUpdatedAt'
+              'code', 'nameMm', 'nameEn', 'phone', 'addressMm', 'addressEn', 'isMain', 'updatedAt', 'serverUpdatedAt'
             ])
           )
         );
-      allow delete: if isValidId(branchId) && (isOwner(existing()) || isAdmin()) && existing().isMain == false;
+      allow delete: if isValidId(branchId) && (isShopAccess(existing()) || isAdmin()) && existing().isMain == false;
     }
 
-    // Products Collection (Real-Time Sync)
+    // Products Collection (Shared Shop + Branch Real-Time Sync)
     match /products/{productId} {
-      allow get: if isValidId(productId) && (isOwner(existing()) || isAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(productId) && (isShopAccess(existing()) || isAdmin());
+      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
       allow create: if isSignedIn()
         && isValidId(productId)
         && isValidProduct(incoming(), productId)
-        && incoming().ownerId == request.auth.uid
         && incoming().serverCreatedAt == request.time
         && incoming().serverUpdatedAt == request.time;
       allow update: if isSignedIn()
         && isValidId(productId)
         && isValidProduct(incoming(), productId)
-        && incoming().ownerId == existing().ownerId
+        && incoming().shopId == existing().shopId
+        && incoming().branchId == existing().branchId
         && incoming().id == existing().id
         && incoming().serverCreatedAt == existing().serverCreatedAt
         && incoming().serverUpdatedAt == request.time
         && (
           isAdmin()
           || (
-            isOwner(existing()) && (
+            isShopAccess(existing()) && (
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'sku', 'nameMm', 'nameEn', 'category', 'costPrice', 'sellPrice',
                 'stock', 'branchStocks', 'minStock', 'unitMm', 'unitEn', 'updatedAt', 'serverUpdatedAt'
@@ -282,24 +286,23 @@ service cloud.firestore {
             )
           )
         );
-      allow delete: if isValidId(productId) && (isOwner(existing()) || isAdmin());
+      allow delete: if isValidId(productId) && (isShopAccess(existing()) || isAdmin());
     }
 
-    // Sales Collection (Real-Time Sync + Terminal State Locking + Branch Referential Integrity)
+    // Sales Collection (Shared Shop + Branch Real-Time Sync + Terminal State Locking)
     match /sales/{saleId} {
-      allow get: if isValidId(saleId) && (isOwner(existing()) || isAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(saleId) && (isShopAccess(existing()) || isAdmin());
+      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
       allow create: if isSignedIn()
         && isValidId(saleId)
         && isValidSale(incoming(), saleId)
-        && incoming().ownerId == request.auth.uid
         && incoming().serverCreatedAt == request.time
         && incoming().serverUpdatedAt == request.time
-        && branchDocExistsForOwner(incoming().branchId);
+        && branchDocExistsForShop(incoming().shopId, incoming().branchId);
       allow update: if isSignedIn()
         && isValidId(saleId)
         && isValidSale(incoming(), saleId)
-        && incoming().ownerId == existing().ownerId
+        && incoming().shopId == existing().shopId
         && incoming().id == existing().id
         && incoming().branchId == existing().branchId
         && incoming().invoiceNo == existing().invoiceNo
@@ -309,61 +312,59 @@ service cloud.firestore {
         && (
           isAdmin()
           || (
-            isOwner(existing())
+            isShopAccess(existing())
             && existing().status != 'voided'
             && (
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'status', 'reversedItems', 'reversalReason', 'reversedAt', 'synced', 'serverUpdatedAt'
+                'status', 'reversedItems', 'reversalReason', 'reversedAt', 'synced', 'updatedAt', 'serverUpdatedAt'
               ])
-              || incoming().diff(existing()).affectedKeys().hasOnly(['synced', 'serverUpdatedAt'])
+              || incoming().diff(existing()).affectedKeys().hasOnly(['synced', 'updatedAt', 'serverUpdatedAt'])
             )
           )
         );
-      allow delete: if isValidId(saleId) && (isOwner(existing()) || isAdmin());
+      allow delete: if isValidId(saleId) && (isShopAccess(existing()) || isAdmin());
     }
 
-    // Stock Movements Collection
+    // Stock Movements Collection (Shared Shop + Branch Audit Ledger)
     match /movements/{movementId} {
-      allow get: if isValidId(movementId) && (isOwner(existing()) || isAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(movementId) && (isShopAccess(existing()) || isAdmin());
+      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
       allow create: if isSignedIn()
         && isValidId(movementId)
         && isValidMovement(incoming(), movementId)
-        && incoming().ownerId == request.auth.uid
         && incoming().serverCreatedAt == request.time;
       allow update: if false;
-      allow delete: if isValidId(movementId) && (isOwner(existing()) || isAdmin());
+      allow delete: if isValidId(movementId) && (isShopAccess(existing()) || isAdmin());
     }
 
-    // Store Settings Collection
+    // Store Settings Collection (Shared Shop Settings)
     match /settings/{settingsId} {
-      allow get: if isValidId(settingsId) && (isOwner(existing()) || isAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(settingsId) && (isShopAccess(existing()) || isAdmin());
+      allow list: if isSignedIn() && (isValidId(existing().shopId) || isBootstrappedAdmin());
       allow create: if isSignedIn()
         && isValidId(settingsId)
         && isValidSettings(incoming(), settingsId)
-        && incoming().ownerId == request.auth.uid
         && incoming().serverCreatedAt == request.time
         && incoming().serverUpdatedAt == request.time;
       allow update: if isSignedIn()
         && isValidId(settingsId)
         && isValidSettings(incoming(), settingsId)
-        && incoming().ownerId == existing().ownerId
+        && incoming().shopId == existing().shopId
         && incoming().id == existing().id
         && incoming().serverCreatedAt == existing().serverCreatedAt
         && incoming().serverUpdatedAt == request.time
         && (
           isAdmin()
           || (
-            isOwner(existing())
+            isShopAccess(existing())
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'storeNameMm', 'storeNameEn', 'phone', 'addressMm', 'addressEn',
               'receiptFooterMm', 'receiptFooterEn', 'defaultLanguage', 'theme',
-              'activeBranchId', 'multiBranchEnabled', 'lastSyncedAt', 'serverUpdatedAt'
+              'activeBranchId', 'multiBranchEnabled', 'lastSyncedAt', 'updatedAt', 'serverUpdatedAt'
             ])
           )
         );
-      allow delete: if isValidId(settingsId) && (isOwner(existing()) || isAdmin());
+      allow delete: if isValidId(settingsId) && (isShopAccess(existing()) || isAdmin());
     }
   }
 }
